@@ -18,8 +18,8 @@ identify permissions and other errors and is highly recommended for the first
 time you use `cmgr` on a system.
 
 ```sh
-wget https://github.com/ArmyCyberInstitute/cmgr/releases/latest/download/examples.tar.gz
-wget https://github.com/ArmyCyberInstitute/cmgr/releases/latest/download/cmgr_`uname -s | tr '[:upper:]' '[:lower:]'`_amd64.tar.gz
+wget https://github.com/picoCTF/cmgr/releases/latest/download/examples.tar.gz
+wget https://github.com/picoCTF/cmgr/releases/latest/download/cmgr_`uname -s | tr '[:upper:]' '[:lower:]'`_amd64.tar.gz
 tar xzvf examples.tar.gz
 cd examples
 tar xzvf ../cmgr_`uname -s | tr '[:upper:]' '[:lower:]'`_amd64.tar.gz
@@ -122,8 +122,7 @@ can be found [here](cmd/cmgrd/swagger.yaml).
 
 If you're interested in contributing, modifying, or extending **cmgr**, the
 core functionality of the project is implemented in a single Go library under
-the `cmgr` directory.  You can view the API documentation on
-[go.dev](https://pkg.go.dev/github.com/ArmyCyberInstitute/cmgr/cmgr).
+the `cmgr` directory.
 Additionally, the _SQLite3_ database is intended to function as a read-only
 API and its schema can be found [here](cmgr/database.go).
 
@@ -132,7 +131,7 @@ _cgo_ enabled for at least the initial build where the _sqlite3_ driver is
 built and installed.  To get started, you can run:
 
 ```sh
-git clone https://github.com/ArmyCyberInstitute/cmgr
+git clone https://github.com/picoCTF/cmgr
 cd cmgr
 go get -v -t -d ./...
 mkdir bin

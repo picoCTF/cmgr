@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ArmyCyberInstitute/cmgr/cmgr"
+	"github.com/picoCTF/cmgr/cmgr"
 )
 
 func playtestChallenge(mgr *cmgr.Manager, args []string) int {

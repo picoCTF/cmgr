@@ -5,7 +5,7 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/ArmyCyberInstitute/cmgr/cmgr"
+	"github.com/picoCTF/cmgr/cmgr"
 )
 
 func resetSystemState(mgr *cmgr.Manager, args []string) int {

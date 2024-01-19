@@ -9,7 +9,7 @@ import (
 
 	"gopkg.in/yaml.v2"
 
-	"github.com/ArmyCyberInstitute/cmgr/cmgr"
+	"github.com/picoCTF/cmgr/cmgr"
 )
 
 func listSchemas(mgr *cmgr.Manager, args []string) int {

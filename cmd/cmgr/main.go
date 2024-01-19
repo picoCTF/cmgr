@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/ArmyCyberInstitute/cmgr/cmgr"
+	"github.com/picoCTF/cmgr/cmgr"
 )
 
 const (

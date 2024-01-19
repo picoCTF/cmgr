@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/ArmyCyberInstitute/cmgr/cmgr/dockerfiles"
+	"github.com/picoCTF/cmgr/cmgr/dockerfiles"
 )
 
 const manualSchemaPrefix = "manual-"

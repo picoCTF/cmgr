@@ -15,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArmyCyberInstitute/cmgr/cmgr"
+	"github.com/picoCTF/cmgr/cmgr"
 )
 
 type state struct {

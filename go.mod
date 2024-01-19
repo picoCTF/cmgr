@@ -1,4 +1,4 @@
-module github.com/ArmyCyberInstitute/cmgr
+module github.com/picoCTF/cmgr
 
 go 1.16
 
