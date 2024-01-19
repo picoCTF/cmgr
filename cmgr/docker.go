@@ -662,10 +662,21 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			}
 		}
 
+		isDynamicInstance := "false"
+		if build.InstanceCount == DYNAMIC_INSTANCES {
+			isDynamicInstance = "true"
+		}
+
+		cLabels := map[string]string{
+			"cmgr.managed": "true",
+			"cmgr.dynamic": isDynamicInstance,
+		}
+
 		cConfig := container.Config{
 			Image:        fmt.Sprintf("%s:%s", build.Challenge, build.dockerId(image)),
 			Hostname:     image.Host,
 			ExposedPorts: exposedPorts,
+			Labels:       cLabels,
 		}
 
 		hConfig := container.HostConfig{
