@@ -1,5 +1,12 @@
 # cmgr
 
+## Notice
+
+This repo is a fork of [ArmyCyberInstitute/cmgr](https://github.com/ArmyCyberInstitute/cmgr) with
+customizations to support our continued usage of cmgr at [picoCTF](https://picoctf.org/).
+
+## Introduction
+
 **cmgr** is a new backend designed to simplify challenge development and
 management for Jeopardy-style CTFs.  It provides a CLI (`cmgr`) intended for
 development and managing available challenges on a back-end challenge server
