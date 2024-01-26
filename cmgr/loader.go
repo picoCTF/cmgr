@@ -141,9 +141,45 @@ func (m *Manager) validateMetadata(md *ChallengeMetadata) error {
 	}
 
 	// Validate Description
-	templates := templateRe.FindAllString(md.Description, -1)
+	// picoCTF fork customization: allow template strings not involving connection information in the description section
+	templates := httpBaseRe.FindAllString(md.Description, -1)
 	if len(templates) > 0 {
-		lastErr = fmt.Errorf("template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		lastErr = fmt.Errorf("'http_base' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		m.log.error(lastErr)
+	}
+	templates = shortHttpBaseRe.FindAllString(md.Description, -1)
+	if len(templates) > 0 {
+		lastErr = fmt.Errorf("'http_base' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		m.log.error(lastErr)
+	}
+	templates = portRe.FindAllString(md.Description, -1)
+	if len(templates) > 0 {
+		lastErr = fmt.Errorf("'port' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		m.log.error(lastErr)
+	}
+	templates = shortPortRe.FindAllString(md.Description, -1)
+	if len(templates) > 0 {
+		lastErr = fmt.Errorf("'port' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		m.log.error(lastErr)
+	}
+	templates = serverRe.FindAllString(md.Description, -1)
+	if len(templates) > 0 {
+		lastErr = fmt.Errorf("'server' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		m.log.error(lastErr)
+	}
+	templates = shortServerRe.FindAllString(md.Description, -1)
+	if len(templates) > 0 {
+		lastErr = fmt.Errorf("'server' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		m.log.error(lastErr)
+	}
+	templates = linkRe.FindAllString(md.Description, -1)
+	if len(templates) > 0 {
+		lastErr = fmt.Errorf("'link' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
+		m.log.error(lastErr)
+	}
+	templates = shortLinkRe.FindAllString(md.Description, -1)
+	if len(templates) > 0 {
+		lastErr = fmt.Errorf("'link' template strings not allowed in the 'description' field, but found: %s", strings.Join(templates, ", "))
 		m.log.error(lastErr)
 	}
 

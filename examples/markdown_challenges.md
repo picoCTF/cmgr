@@ -9,22 +9,23 @@
 
 ## Description
 
-This is a static description of the challenge that is intended to be shown to
-the user and will be the same across all instances of the challenge.
+This portion of the challenge description is displayed to users regardless of whether an instance of the challenge is currently running. It may include static text, as well as the following templates:
+
+- `{{url_for("file", "display text")}}` (link to an artifact file published in a build)
+- `{{lookup("key")}}` ("key" must have been published in `metadata.json` when creating a build)
 
 ## Details
 
-This is templated information for the challenge that can use additional
-build-specific information to present information.  In particular, the following
-templates are allowed (anything else is invalid):
-- `{{url_for("file", "display text")}}`
+This portion of the challenge description is displayed to users when an instance of a challenge is
+running. It may include any content permitted in the "Description" section, as well as the following
+instance-specific templates:
+
 - `{{http_base("port_name")}}` (URL prefix for HTTP requests to the named port)
+- `{{server("port_name")}}` (hostname which hosts for connecting to the
+associated port for the challenge)
 - `{{port("port_name")}}` (The specific port number competitors will see which
 may not be the same number as exposed by Docker if the front-end is proxying
 connections.)
-- `{{server("port_name")}}` (hostname which hosts for connecting to the
-associated port for the challenge)
-- `{{lookup("key")}}` ("key" must have been published in `metadata.json` when creating a build)
 - `{{link("port_name", "/url/in/challenge")}}` (convenience wrapper for generating an HTML link)
 - `{{link_as("port_name", "/url/in/challenge", "display text")}}` (convenience
 wrapper for generating an HTML link with text different from the URL)
