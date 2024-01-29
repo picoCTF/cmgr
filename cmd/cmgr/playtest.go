@@ -98,10 +98,21 @@ func launchPortal(mgr *cmgr.Manager, iface string, port int, cid cmgr.ChallengeI
 
 		w.Write([]byte(fmt.Sprintf(`<h1>%s</h1>`, cMeta.Name)))
 
-		w.Write([]byte(fmt.Sprintf(`<h2>Description</h2><p>%s</p>`, cMeta.Description)))
+		artifactUrl := fmt.Sprintf("http://%s:%d/artifact/$1", iface, port)
+
+		description := cMeta.Description
+		description = urlRe.ReplaceAllString(description, artifactUrl)
+		for lookupRe.MatchString(description) {
+			match := lookupRe.FindStringSubmatch(description)
+			description = strings.ReplaceAll(
+				description,
+				match[0],
+				fmt.Sprintf("%s", bMeta.LookupData[match[1]]))
+		}
+
+		w.Write([]byte(fmt.Sprintf(`<h2>Description</h2><p>%s</p>`, description)))
 
 		details := cMeta.Details
-		artifactUrl := fmt.Sprintf("http://%s:%d/artifact/$1", iface, port)
 		details = urlRe.ReplaceAllString(details, artifactUrl)
 		details = serverRe.ReplaceAllString(details, iface)
 		details = httpBaseRe.ReplaceAllString(details, fmt.Sprintf("http://%s", iface))

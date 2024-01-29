@@ -304,8 +304,13 @@ func (m *Manager) validateMetadata(md *ChallengeMetadata) error {
 		return s, err
 	}
 
-	// Validate (& lift) Details
-	res, err := normalizeAndCheckTemplated(md.Details)
+	res, err := normalizeAndCheckTemplated(md.Description)
+	if err != nil {
+		lastErr = err
+	}
+	md.Description = res
+
+	res, err = normalizeAndCheckTemplated(md.Details)
 	if err != nil {
 		lastErr = err
 	}
@@ -447,8 +452,12 @@ func (m *Manager) validateBuild(cMeta *ChallengeMetadata, md *BuildMetadata, fil
 		return err
 	}
 
-	// Validate (& lift) Details
-	err := checkTemplated(cMeta.Details)
+	// Validate templated fields
+	err := checkTemplated(cMeta.Description)
+	detailsErr := checkTemplated(cMeta.Details)
+	if detailsErr != nil {
+		err = detailsErr
+	}
 
 	for _, hint := range cMeta.Hints {
 		tmpErr := checkTemplated(hint)
