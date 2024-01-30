@@ -350,7 +350,8 @@ func (m *Manager) UpdateSchema(schema *Schema) []error {
 	if err != nil {
 		return []error{err}
 	} else if !exists {
-		return []error{fmt.Errorf("schema '%s' does not exist", schema.Name)}
+		m.log.warnf("schema '%s' does not exist, creating...", schema.Name)
+		return m.CreateSchema(schema)
 	}
 
 	return m.convergeSchema(schema)
