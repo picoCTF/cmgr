@@ -335,7 +335,7 @@ definitions:
         format: int32
       category:
         type: string
-      poitns:
+      points:
         type: integer
         format: int32
       tags:
