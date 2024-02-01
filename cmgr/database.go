@@ -23,7 +23,7 @@ const schemaQuery string = `
 		path TEXT NOT NULL,
 		solvescript INTEGER NOT NULL CHECK(solvescript == 0 OR solvescript == 1),
 		templatable INTEGER NOT NULL CHECK(templatable == 0 OR templatable == 1),
-		maxusers INTEGER NOT NULL CHECK(maxusers >= 0),
+		maxusers INTEGER NOT NULL CHECK(maxusers == -1 OR maxusers == 1),
 		category TEXT,
 		points INTEGER NOT NULL CHECK(points >= 0)
 	);
