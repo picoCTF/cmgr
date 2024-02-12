@@ -47,11 +47,9 @@ jobs:
     strategy:
       matrix:
         os:
-          - ubuntu-latest
-          - macos-latest
-        arch:
-          - amd64
-          - arm64
+          - ubuntu-latest # amd64
+          - macos-13 # amd64
+          - macos-14 # arm64
     steps:
       - name: Set up Go 1.x
         uses: actions/setup-go@v2
@@ -60,25 +58,21 @@ jobs:
         id: go
 
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Build project # This would actually build your project, using zip for an example artifact
+      - name: Build project
         run: |
           go get -v -t -d ./...
           mkdir bin
-          CGO_ENABLED=1 GOARCH=${arch} go build -v -ldflags "-X github.com/picoCTF/cmgr/cmgr.version=`git describe --tags`" -o bin ./...
+          CGO_ENABLED=1 go build -v -ldflags "-X github.com/picoCTF/cmgr/cmgr.version=`git describe --tags`" -o bin ./...
           cp LICENSE bin/LICENSE
           cat NOTICE NOTICE.release > bin/NOTICE
           cd bin && tar czvf cmgr.tar.gz cmgr cmgrd LICENSE NOTICE
-        env:
-          arch: ${{ matrix.arch }}
 
       - name: Get OS/architecture suffix
         id: suffix
         run: |
-          echo "::set-output name=arch_suffix::`go version | cut -d ' ' -f 4,4 | cut -d '/' -f 1,1`_${arch}"
-        env:
-          arch: ${{ matrix.arch }}
+          echo "::set-output name=arch_suffix::`go version | cut -d ' ' -f 4,4 | tr '/' '_'`"
 
       - name: Upload Binaries
         id: upload-binaries
