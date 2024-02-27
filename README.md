@@ -5,6 +5,8 @@
 This repo is a fork of [ArmyCyberInstitute/cmgr](https://github.com/ArmyCyberInstitute/cmgr) with
 customizations to support our continued usage of cmgr at [picoCTF](https://picoctf.org/).
 
+For specific details regarding changes from the upstream project, see the [release notes](https://github.com/picoCTF/cmgr/releases).
+
 ## Introduction
 
 **cmgr** is a new backend designed to simplify challenge development and
