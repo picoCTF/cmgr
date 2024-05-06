@@ -4,8 +4,6 @@
 - Type: custom
 - Category: Privilege Escalation
 - Points: 25
-- Templatable: yes
-- MaxUsers: 1
 
 ## Description
 

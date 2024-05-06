@@ -1,11 +1,9 @@
-# Markdown Challenge Specification
+# Challenge Specification
 
 - Namespace: cmgr/examples
-- Type: flask
+- Type: custom
 - Category: example
 - Points: 1
-- Templatable: yes
-- MaxUsers: 0
 
 ## Description
 

@@ -4,8 +4,6 @@
 - Type: static-make
 - Category: Reverse Engineering
 - Points: 50
-- Templatable: yes
-- MaxUsers: 0
 
 ## Description
 

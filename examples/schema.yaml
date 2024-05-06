@@ -1,9 +1,9 @@
-name: yaml-example
+name: example
 flag_format: example{%s}
 challenges:
-  cmgr/examples/flask--sqlite:
+  cmgr/examples/custom-socat:
     seeds: [ 1, 5, 101 ]
     instance_count: 1
-  cmgr/examples/php-sqlite:
+  cmgr/examples/aptitude-and-privileges:
     seeds: [ 19, 42, 15412 ]
     instance_count: -1

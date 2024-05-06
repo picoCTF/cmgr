@@ -4,8 +4,6 @@
 - Type: static-make
 - Category: Miscellaneous
 - Points: 150
-- Templatable: Yes
-- MaxUsers: 0
 
 ## Description
 

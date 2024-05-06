@@ -4,8 +4,6 @@
 - Type: remote-make
 - Category: Binary Exploitation
 - Points: 50
-- Templatable: yes
-- MaxUsers: 0
 
 ## Description
 
