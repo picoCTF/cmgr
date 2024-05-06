@@ -771,7 +771,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 
 		cid := respCC.ID
 		instance.Containers = append(instance.Containers, cid)
-		m.log.infof("created new image: %s", cid)
+		m.log.infof("created new container: %s", cid)
 
 		err = m.cli.ContainerStart(m.ctx, cid, types.ContainerStartOptions{})
 		if err != nil {
