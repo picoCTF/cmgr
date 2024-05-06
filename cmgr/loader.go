@@ -1,9 +1,7 @@
 package cmgr
 
 import (
-	"encoding/json"
 	"fmt"
-	"hash/crc32"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -20,9 +18,7 @@ func (m *Manager) loadChallenge(path string, info os.FileInfo) (*ChallengeMetada
 	var err error
 
 	// Screen out non-problem files
-	if info.Name() == "problem.json" {
-		md, err = m.loadJsonChallenge(path, info)
-	} else if info.Name() == "problem.md" {
+	if info.Name() == "problem.md" {
 		md, err = m.loadMarkdownChallenge(path, info)
 	}
 
@@ -327,7 +323,7 @@ func (m *Manager) validateMetadata(md *ChallengeMetadata) error {
 	}
 
 	for port, used := range refPort {
-		if !used && md.ChallengeType != "hacksport" {
+		if !used {
 			lastErr = fmt.Errorf("port '%s' published but not referenced: %s", port, md.Path)
 			m.log.error(lastErr)
 		}
@@ -669,92 +665,4 @@ func (m *Manager) processDockerfile(md *ChallengeMetadata) error {
 	}
 
 	return err
-}
-
-// BUG(jrolli): Need to actually implement more validation such as verifying
-// that published ports are referenced and that there are no clearly invalid
-// format strings in the details and hints.
-
-type hacksportAttrs struct {
-	Author       string `json:"author"`
-	Event        string `json:"event"`
-	Organization string `json:"organization"`
-	Version      string `json:"version"`
-	Score        int    `json:"score"`
-}
-
-// Loads the JSON information using the built-in encoding format.  This works
-// but results in a less-than-desireable end-user experience because of opaque
-// error codes.  It may be worth implementing a custom implementation that
-// leverages the decoder iteratively in order to manually provide more useful
-// debug information to challenge authors.  This would also allow us to avoid
-// the double-pass to catch unknown attributes.
-func (m *Manager) loadJsonChallenge(path string, info os.FileInfo) (*ChallengeMetadata, error) {
-	m.log.debugf("Found challenge JSON at %s", path)
-
-	// Validate the file, and record the identifier
-	data, err := ioutil.ReadFile(path)
-	if err != nil {
-		m.log.errorf("could not read challenge file: %s", err)
-		return nil, err
-	}
-
-	// Unmarshal the JSON file
-	metadata := new(ChallengeMetadata)
-	err = json.Unmarshal(data, metadata)
-	if err != nil {
-		m.log.errorf("could not unmarshal challenge file: %s", err)
-		return nil, err
-	}
-
-	// Indicates that this is a legacy hacksport challenge that needs lifting
-	if metadata.ChallengeType == "" {
-		_, err := os.Stat(filepath.Join(filepath.Dir(path), "challenge.py"))
-		if err != nil {
-			err := fmt.Errorf("could not stat 'challenge.py' on implicit hacksport challenge: %s", path)
-			m.log.error(err)
-			return nil, err
-		}
-
-		var attrs hacksportAttrs
-		err = json.Unmarshal(data, &attrs)
-		if err != nil {
-			m.log.error(err)
-			return nil, err
-		}
-
-		metadata.ChallengeType = "hacksport"
-		metadata.Namespace = "hacksport"
-		metadata.Details = metadata.Description
-		metadata.Description = ""
-		metadata.SolveScript = false
-
-		metadata.Points = attrs.Score
-
-		metadata.Attributes = make(map[string]string)
-		if attrs.Author != "" {
-			metadata.Attributes["author"] = attrs.Author
-		}
-
-		if attrs.Event != "" {
-			metadata.Attributes["event"] = attrs.Event
-		}
-
-		if attrs.Author != "" {
-			metadata.Attributes["organization"] = attrs.Organization
-		}
-
-		if attrs.Version != "" {
-			metadata.Attributes["version"] = attrs.Version
-		}
-	}
-
-	h := crc32.NewIEEE()
-	_, err = h.Write(append(data, []byte(path)...))
-	if err != nil {
-		return nil, err
-	}
-	metadata.MetadataChecksum = h.Sum32()
-
-	return metadata, nil
 }
