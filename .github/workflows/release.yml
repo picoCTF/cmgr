@@ -49,7 +49,7 @@ jobs:
         os:
           - ubuntu-latest # amd64
           - macos-13 # amd64
-          - macos-14 # arm64
+          - macos-latest # arm64
     steps:
       - name: Set up Go 1.x
         uses: actions/setup-go@v2
