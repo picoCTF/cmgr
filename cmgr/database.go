@@ -166,6 +166,7 @@ const schemaQuery string = `
 		nonewprivileges INTEGER NOT NULL CHECK(nonewprivileges == 0 OR nonewprivileges == 1),
 		diskquota TEXT NOT NULL,
 		cgroupparent TEXT NOT NULL,
+		capimmutable INTEGER NOT NULL CHECK(capimmutable == 0 OR capimmutable == 1) DEFAULT 0,
 		FOREIGN KEY (challenge) REFERENCES challenges (id)
 			ON UPDATE CASCADE ON DELETE CASCADE
 	);`
@@ -193,6 +194,9 @@ func (m *Manager) initDatabase() error {
 		m.log.errorf("could not set database schema: %s", err)
 		return err
 	}
+	// Best-effort migration for older DBs: add capimmutable if missing.
+	// If the column already exists, this will error and we ignore it.
+	_, _ = db.Exec("ALTER TABLE containerOptions ADD COLUMN capimmutable INTEGER NOT NULL DEFAULT 0;")
 
 	var fkeysEnforced bool
 	err = db.QueryRow("PRAGMA foreign_keys;").Scan(&fkeysEnforced)
