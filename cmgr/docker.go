@@ -447,7 +447,6 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 		m.log.debug("inserting custom seccomp profile")
 		hConfig.SecurityOpt = []string{"seccomp:" + seccompPolicy}
 	}
-	hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
 
 	respCC, err := m.cli.ContainerCreate(m.ctx, &cConfig, &hConfig, &nConfig, nil, "")
 	if err != nil {
@@ -754,7 +753,9 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			m.log.debug("inserting custom seccomp profile")
 			hConfig.SecurityOpt = append(hConfig.SecurityOpt, "seccomp:"+seccompPolicy)
 		}
-		hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
+		if cOpts.CapImmutable {
+			hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
+		}
 
 		nConfig := network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
