@@ -631,7 +631,7 @@ func (m *Manager) stopNetwork(instance *InstanceMetadata) error {
 // with the SQLite database.
 var portLock sync.Mutex
 
-func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions) error {
+func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions, envVars map[string]string) error {
 	revPortMap, err := m.getReversePortMap(build.Challenge)
 	if err != nil {
 		return err
@@ -677,6 +677,14 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			Hostname:     image.Host,
 			ExposedPorts: exposedPorts,
 			Labels:       cLabels,
+		}
+
+		if len(envVars) > 0 {
+			var envList []string
+			for k, v := range envVars {
+				envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+			}
+			cConfig.Env = envList
 		}
 
 		hConfig := container.HostConfig{

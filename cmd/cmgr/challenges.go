@@ -356,7 +356,7 @@ func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string
 	}
 
 	// Start
-	instance, err := mgr.Start(build.Id)
+	instance, err := mgr.Start(build.Id, nil)
 	if err != nil {
 		fmt.Printf("error (%s): could not start instance: %s\n", cMeta.Id, err)
 		return false

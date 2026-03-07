@@ -638,7 +638,7 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 							err = m.startNetwork(instance, cMeta.ChallengeOptions.NetworkOptions)
 						}
 						if err == nil {
-							err = m.startContainers(build, instance, cMeta.ChallengeOptions.Overrides)
+							err = m.startContainers(build, instance, cMeta.ChallengeOptions.Overrides, nil)
 						}
 						if err != nil {
 							errs = append(errs, err)
