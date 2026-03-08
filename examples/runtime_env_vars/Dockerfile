@@ -1,4 +1,4 @@
-FROM python:3.9-alpine AS base
+FROM python:3.12-alpine AS base
 
 # Every challenge must place files into this directory
 RUN mkdir /challenge
