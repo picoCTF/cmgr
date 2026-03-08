@@ -148,7 +148,7 @@ type BuildChallengeRequest struct {
 }
 
 type InstanceStartRequest struct {
-	UserId interface{}       `json:"user_id"`
+	UserId string            `json:"user_id"`
 	Env    map[string]string `json:"env"`
 }
 
@@ -259,18 +259,19 @@ func (s state) buildHandler(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil {
 			var req InstanceStartRequest
 			err = json.NewDecoder(r.Body).Decode(&req)
-			if err == nil || err == io.EOF {
-				err = nil // ignore EOF if body is empty
-				if req.Env != nil {
-					for k, v := range req.Env {
-						envVars["CMGR_"+k] = v
-					}
+			if err != nil && err != io.EOF {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte("invalid request body: " + err.Error()))
+				return
+			}
+			err = nil
+			if req.Env != nil {
+				for k, v := range req.Env {
+					envVars["CMGR_"+k] = v
 				}
-				if req.UserId != nil {
-					envVars["CMGR_USER_ID"] = fmt.Sprintf("%v", req.UserId)
-				}
-			} else {
-				err = nil
+			}
+			if req.UserId != "" {
+				envVars["CMGR_USER_ID"] = req.UserId
 			}
 		}
 
