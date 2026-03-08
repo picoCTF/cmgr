@@ -679,6 +679,9 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			Labels:       cLabels,
 		}
 
+		// Note: envVars (including user_id and any caller-supplied variables) are
+		// injected identically into every container in the build. In multi-container
+		// challenges all containers will receive the same set of environment variables.
 		if len(envVars) > 0 {
 			var envList []string
 			for k, v := range envVars {
