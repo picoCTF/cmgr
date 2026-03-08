@@ -726,7 +726,7 @@ func TestDatabasePortOperations(t *testing.T) {
 	}
 }
 
-// setupTestManager creates a Manager with a temporary in-memory-like database for testing
+// setupTestManager creates a Manager with a temporary on-disk database file for testing
 func setupTestManager(t *testing.T) *Manager {
 	t.Helper()
 
