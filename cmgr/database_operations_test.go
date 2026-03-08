@@ -2,7 +2,6 @@ package cmgr
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"testing"
 )
@@ -731,7 +730,7 @@ func TestDatabasePortOperations(t *testing.T) {
 func setupTestManager(t *testing.T) *Manager {
 	t.Helper()
 
-	dbFile, err := ioutil.TempFile("", "cmgr-test-*.db")
+	dbFile, err := os.CreateTemp("", "cmgr-test-*.db")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %s", err)
 	}
