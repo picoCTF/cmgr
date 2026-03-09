@@ -620,7 +620,12 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 						continue
 					}
 
-					// Recreate network and containers
+					// Recreate network and containers for persistent (non-on-demand) instances only.
+					// On-demand (dynamic) instances are started per-user with injected env vars
+					// and must not be auto-restarted here.
+					if build.InstanceCount == DYNAMIC_INSTANCES {
+						continue
+					}
 					instances, err := m.getBuildInstances(build.Id)
 					if err != nil {
 						errs = append(errs, err)
