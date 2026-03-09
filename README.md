@@ -127,6 +127,14 @@ very simple REST API which allows a front-end to manage all of the important
 tasks of running a competition or training environment.  The OpenAPI specification
 can be found [here](cmd/cmgrd/swagger.yaml).
 
+**Note:** If your front-end needs to supply user state or dynamic configuration 
+to a challenge natively, the `POST /builds/<id>` endpoint optionally accepts a 
+JSON payload containing a `user_id` identifier and a map of `env` variables.
+To prevent namespace pollution, all variables passed through this REST map are 
+prepended with a `CMGR_` prefix automatically before being injected into the container execution context.
+In multi-container challenges, the `user_id` and all `env` variables are propagated
+equally to **every** container in the build — there is no per-container filtering.
+
 ### Back-End
 
 If you're interested in contributing, modifying, or extending **cmgr**, the

@@ -620,7 +620,10 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 						continue
 					}
 
-					// Recreate network and containers
+					// Stop and tear down existing instances. For persistent (non-on-demand)
+					// instances also restart them with the new image. On-demand (dynamic)
+					// instances are started per-user with injected env vars, so they are
+					// only torn down here and not restarted.
 					instances, err := m.getBuildInstances(build.Id)
 					if err != nil {
 						errs = append(errs, err)
@@ -634,11 +637,11 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 						if err == nil {
 							err = m.stopNetwork(instance)
 						}
-						if err == nil {
+						if err == nil && build.InstanceCount != DYNAMIC_INSTANCES {
 							err = m.startNetwork(instance, cMeta.ChallengeOptions.NetworkOptions)
 						}
-						if err == nil {
-							err = m.startContainers(build, instance, cMeta.ChallengeOptions.Overrides)
+						if err == nil && build.InstanceCount != DYNAMIC_INSTANCES {
+							err = m.startContainers(build, instance, cMeta.ChallengeOptions.Overrides, nil)
 						}
 						if err != nil {
 							errs = append(errs, err)

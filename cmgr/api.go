@@ -204,8 +204,11 @@ func (m *Manager) Build(challenge ChallengeId, seeds []int, flagFormat string) (
 }
 
 // Creates a running "instance" of the given build and returns its identifier
-// on success otherwise an error.
-func (m *Manager) Start(build BuildId) (InstanceId, error) {
+// on success otherwise an error. The optional envVars map provides extra
+// environment variables to inject into the instance's containers. Keys in
+// envVars should already include the "CMGR_" prefix. Pass nil if no
+// additional environment variables are needed.
+func (m *Manager) Start(build BuildId, envVars map[string]string) (InstanceId, error) {
 	// Get build metadata
 	bMeta, err := m.lookupBuildMetadata(build)
 	if err != nil {
@@ -216,10 +219,10 @@ func (m *Manager) Start(build BuildId) (InstanceId, error) {
 		return 0, errors.New("locked build: change the schema definition to start more instances")
 	}
 
-	return m.newInstance(bMeta)
+	return m.newInstance(bMeta, envVars)
 }
 
-func (m *Manager) newInstance(build *BuildMetadata) (InstanceId, error) {
+func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (InstanceId, error) {
 	iMeta := &InstanceMetadata{
 		Build:      build.Id,
 		Ports:      make(map[string]int),
@@ -240,7 +243,7 @@ func (m *Manager) newInstance(build *BuildMetadata) (InstanceId, error) {
 		return 0, err
 	}
 
-	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides)
+	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides, envVars)
 	if err != nil {
 		// It is possible we are in a partially deployed state.  Make sure
 		// we are torn down, but ignore the returned error.
@@ -401,14 +404,14 @@ func (m *Manager) convergeSchema(schema *Schema) []error {
 			continue
 		}
 
-		for _, build := range builds {
-			target := schema.Challenges[build.Challenge].InstanceCount
+		for _, buildMeta := range builds {
+			target := schema.Challenges[buildMeta.Challenge].InstanceCount
 			if target == DYNAMIC_INSTANCES || target == LOCKED {
 				continue
 			}
 
-			instances, err := m.getBuildInstances(build.Id)
-			m.log.debugf("converging %s/%d: %d found, need %d", build.Challenge, build.Id, len(instances), target)
+			instances, err := m.getBuildInstances(buildMeta.Id)
+			m.log.debugf("converging %s/%d: %d found, need %d", buildMeta.Challenge, buildMeta.Id, len(instances), target)
 			for i := target; i < len(instances); i++ {
 				iMeta, err := m.lookupInstanceMetadata(instances[i])
 				if err != nil {
@@ -423,21 +426,20 @@ func (m *Manager) convergeSchema(schema *Schema) []error {
 			}
 
 			for i := len(instances); i < target; i++ {
-				if len(build.Images) == 0 {
+				if len(buildMeta.Images) == 0 {
 					// Lazy lookup for case where we resized
-					build, err = m.lookupBuildMetadata(build.Id)
+					buildMeta, err = m.lookupBuildMetadata(buildMeta.Id)
 					if err != nil {
 						errs = append(errs, err)
 						break
 					}
 				}
-				_, err = m.newInstance(build)
+				_, err = m.newInstance(buildMeta, nil)
 				if err != nil {
 					errs = append(errs, err)
 					break
 				}
 			}
-
 		}
 	}
 

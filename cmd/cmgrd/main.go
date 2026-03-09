@@ -147,6 +147,11 @@ type BuildChallengeRequest struct {
 	Seeds      []int  `json:"seeds"`
 }
 
+type InstanceStartRequest struct {
+	UserId string            `json:"user_id"`
+	Env    map[string]string `json:"env"`
+}
+
 func (s state) challengeHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.Split(r.URL.Path, "/")
 	pathLen := len(path)
@@ -250,7 +255,27 @@ func (s state) buildHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	case "POST":
 		var instance cmgr.InstanceId
-		instance, err = s.mgr.Start(build)
+		envVars := make(map[string]string)
+		if r.Body != nil {
+			var req InstanceStartRequest
+			err = json.NewDecoder(r.Body).Decode(&req)
+			if err != nil && err != io.EOF {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte("invalid request body: " + err.Error()))
+				return
+			}
+			err = nil
+			if req.Env != nil {
+				for k, v := range req.Env {
+					envVars["CMGR_"+k] = v
+				}
+			}
+			if req.UserId != "" {
+				envVars["CMGR_USER_ID"] = req.UserId
+			}
+		}
+
+		instance, err = s.mgr.Start(build, envVars)
 		respCode = http.StatusCreated
 
 		var iMeta *cmgr.InstanceMetadata

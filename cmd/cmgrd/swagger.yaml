@@ -110,6 +110,13 @@ paths:
       tags: [builds]
       produces: ["application/json"]
       summary: "Starts an instance of the build"
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "Optional runtime configuration (e.g. user_id or dynamic environment variables). `user_id` and any `env` values will be injected into the container with a `CMGR_` prefix."
+          required: false
+          schema:
+            $ref: "#/definitions/InstanceStartRequest"
       responses:
         "404":
           description: "Invalid path string to include invalid build identifier"
@@ -453,3 +460,15 @@ definitions:
       instance_count:
         type: integer
         format: int32
+  InstanceStartRequest:
+    type: object
+    description: "Optional payload when starting an instance of a build to pass runtime information. Environment variables in the map will be injected with a `CMGR_` prefix."
+    properties:
+      user_id:
+        type: string
+        description: "An identifier for the user starting the instance. Injected as `CMGR_USER_ID`."
+      env:
+        type: object
+        description: "Additional custom environment variables to inject. Keys will have `CMGR_` prepended before being exported inside the container."
+        additionalProperties:
+          type: string

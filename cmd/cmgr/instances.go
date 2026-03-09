@@ -25,7 +25,7 @@ func startInstance(mgr *cmgr.Manager, args []string) int {
 		return USAGE_ERROR
 	}
 
-	instance, err := mgr.Start(cmgr.BuildId(build))
+	instance, err := mgr.Start(cmgr.BuildId(build), nil)
 	if err != nil {
 		fmt.Printf("error: could not start instance: %s\n", err)
 		return RUNTIME_ERROR
