@@ -687,7 +687,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			for k, v := range envVars {
 				envList = append(envList, fmt.Sprintf("%s=%s", k, v))
 			}
-			cConfig.Env = envList
+			cConfig.Env = append(cConfig.Env, envList...)
 		}
 
 		hConfig := container.HostConfig{
