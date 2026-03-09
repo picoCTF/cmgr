@@ -204,7 +204,10 @@ func (m *Manager) Build(challenge ChallengeId, seeds []int, flagFormat string) (
 }
 
 // Creates a running "instance" of the given build and returns its identifier
-// on success otherwise an error.
+// on success otherwise an error. The optional envVars map provides extra
+// environment variables to inject into the instance's containers. Keys in
+// envVars should already include the "CMGR_" prefix. Pass nil if no
+// additional environment variables are needed.
 func (m *Manager) Start(build BuildId, envVars map[string]string) (InstanceId, error) {
 	// Get build metadata
 	bMeta, err := m.lookupBuildMetadata(build)
