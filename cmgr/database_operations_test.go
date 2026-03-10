@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 )
 
 // TestDatabaseChallengeRoundTrip tests adding, looking up, and removing challenges
@@ -381,6 +382,33 @@ func TestDatabaseInstanceLifecycle(t *testing.T) {
 		t.Errorf("unexpected containers: %v", got.Containers)
 	}
 
+	// Verify created_at is populated as a non-nil *time.Time
+	if got.CreatedAt == nil {
+		t.Error("expected non-nil CreatedAt for new instance")
+	} else {
+		// Verify it is a recent time (within the last minute)
+		elapsed := time.Since(*got.CreatedAt)
+		if elapsed < 0 || elapsed > time.Minute {
+			t.Errorf("CreatedAt %v is not recent (elapsed %v)", *got.CreatedAt, elapsed)
+		}
+
+		// Verify JSON serialization produces RFC3339 format
+		data, err := json.Marshal(got)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %s", err)
+		}
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("json.Unmarshal failed: %s", err)
+		}
+		createdAtStr, ok := decoded["created_at"].(string)
+		if !ok {
+			t.Errorf("expected created_at to be a JSON string, got %T", decoded["created_at"])
+		} else if _, err := time.Parse(time.RFC3339, createdAtStr); err != nil {
+			t.Errorf("created_at %q is not RFC3339: %s", createdAtStr, err)
+		}
+	}
+
 	// Get build instances
 	instances, err := mgr.getBuildInstances(build.Id)
 	if err != nil {
@@ -409,6 +437,83 @@ func TestDatabaseInstanceLifecycle(t *testing.T) {
 	err = mgr.removeInstanceMetadata(instance.Id)
 	if err != nil {
 		t.Fatalf("removeInstanceMetadata failed: %s", err)
+	}
+}
+
+// TestInstanceCreatedAtNullLegacy verifies that legacy instances with NULL created_at
+// deserialize to nil *time.Time and serialize as JSON null.
+func TestInstanceCreatedAtNullLegacy(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+
+	// Set up a challenge and build as required by the instances foreign key
+	challenge := &ChallengeMetadata{
+		Id:            "test/null-created-at",
+		Name:          "Null CreatedAt Challenge",
+		Namespace:     "test",
+		ChallengeType: "custom",
+		Description:   "Test",
+		Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+		PortMap:       map[string]PortInfo{},
+		Tags:          []string{},
+		Attributes:    map[string]string{},
+		Path:          "/tmp/test/problem.md",
+		ChallengeOptions: ChallengeOptions{
+			Overrides: map[string]ContainerOptions{"": {}},
+		},
+	}
+	errs := mgr.addChallenges([]*ChallengeMetadata{challenge})
+	if len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
+	build := &BuildMetadata{
+		Seed:          42,
+		Format:        "flag{%s}",
+		Challenge:     challenge.Id,
+		Schema:        "manual-test",
+		InstanceCount: DYNAMIC_INSTANCES,
+	}
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("openBuild failed: %s", err)
+	}
+	build.Flag = "flag{null_created_at}"
+	build.Images = []Image{{Host: "challenge", Ports: []string{"80/tcp"}}}
+	build.LookupData = map[string]string{}
+	if err := mgr.finalizeBuild(build); err != nil {
+		t.Fatalf("finalizeBuild failed: %s", err)
+	}
+
+	// Insert a legacy instance with NULL created_at directly
+	res, err := mgr.db.Exec(
+		"INSERT INTO instances(build, lastsolved, created_at) VALUES (?, 0, NULL)",
+		build.Id,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert legacy instance: %s", err)
+	}
+	id, _ := res.LastInsertId()
+
+	got, err := mgr.lookupInstanceMetadata(InstanceId(id))
+	if err != nil {
+		t.Fatalf("lookupInstanceMetadata failed: %s", err)
+	}
+
+	if got.CreatedAt != nil {
+		t.Errorf("expected nil CreatedAt for legacy instance, got %v", got.CreatedAt)
+	}
+
+	// Verify JSON serialization produces null for a nil *time.Time
+	data, jsonErr := json.Marshal(got)
+	if jsonErr != nil {
+		t.Fatalf("json.Marshal failed: %s", jsonErr)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %s", err)
+	}
+	if decoded["created_at"] != nil {
+		t.Errorf("expected JSON null for nil CreatedAt, got %v", decoded["created_at"])
 	}
 }
 
