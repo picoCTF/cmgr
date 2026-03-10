@@ -626,7 +626,7 @@ func (m *Manager) checkPrune() {
 }
 
 func (m *Manager) Prune() error {
-	m.log.infof("pruning on-demand instances older than %s", m.pruneAge)
+	m.log.debugf("pruning on-demand instances older than %s", m.pruneAge)
 
 	// Manual builds start with the manual schema prefix. We want to find
 	// instances associated with these builds that are older than the prune age.
