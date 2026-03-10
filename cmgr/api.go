@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/picoCTF/cmgr/cmgr/dockerfiles"
@@ -596,7 +595,7 @@ func (m *Manager) checkPrune() {
 	}
 
 	now := time.Now().UnixNano()
-	last := atomic.LoadInt64(&m.lastPruneUnix)
+	last := m.lastPruneUnix.Load()
 
 	// Fast path: interval hasn't elapsed — no lock needed.
 	if time.Duration(now-last) < m.pruneInterval {
@@ -604,7 +603,7 @@ func (m *Manager) checkPrune() {
 	}
 
 	// CAS to claim the prune slot; only one goroutine wins per interval.
-	if !atomic.CompareAndSwapInt64(&m.lastPruneUnix, last, now) {
+	if !m.lastPruneUnix.CompareAndSwap(last, now) {
 		return
 	}
 
