@@ -38,3 +38,26 @@ is:
 ```
 
 **Note:** You will need to restart the daemon after changing its configuration.
+
+## 404 errors when stopping instances (`unknown instance id`)
+
+**Symptom:** An external service (e.g., a Celery task) that periodically calls
+`DELETE /instances/<id>` receives a 404 / "unknown instance id" error, even
+though the instance was recently active.
+
+**Cause:** `cmgr` automatically prunes on-demand instances from its database
+when they are older than `CMGR_PRUNE_AGE` (default: `1h`). If the prune age
+is shorter than your external stop interval the DB row is removed before the
+scheduled stop request arrives. This is harmless at the container layer (the
+running containers are also reaped externally), but the REST call will fail.
+
+**Solution:** Set `CMGR_PRUNE_AGE` to a value strictly greater than your
+external stop interval. For example, if your Celery task stops instances every
+15 minutes, a value of `1h` (the default) or greater is safe.
+
+```sh
+export CMGR_PRUNE_AGE=2h
+```
+
+Alternatively, set `CMGR_PRUNE_AGE=0` to disable automatic pruning entirely
+and rely solely on explicit stop calls to clean up instances.
