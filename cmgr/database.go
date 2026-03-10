@@ -125,9 +125,12 @@ const schemaQuery string = `
 		id INTEGER PRIMARY KEY,
 		lastsolved INTEGER,
 		build INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (build) REFERENCES builds (id)
 			ON UPDATE RESTRICT ON DELETE RESTRICT
 	);
+
+	CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);
 
 	CREATE TABLE IF NOT EXISTS portAssignments (
 		instance INTEGER NOT NULL,
@@ -179,7 +182,7 @@ func (m *Manager) initDatabase() error {
 		dbPath = "cmgr.db"
 	}
 
-	db, err := sqlx.Open("sqlite3", dbPath+"?_fk=true")
+	db, err := sqlx.Open("sqlite3", dbPath+"?_fk=true&_journal_mode=WAL")
 	if err != nil {
 		m.log.errorf("could not open database: %s", err)
 		return err
@@ -193,6 +196,10 @@ func (m *Manager) initDatabase() error {
 		m.log.errorf("could not set database schema: %s", err)
 		return err
 	}
+
+	// Handle migration for existing databases (idempotent: errors silently ignored)
+	_, _ = db.Exec("ALTER TABLE instances ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP;")
+	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);")
 
 	var fkeysEnforced bool
 	err = db.QueryRow("PRAGMA foreign_keys;").Scan(&fkeysEnforced)

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/picoCTF/cmgr/cmgr/dockerfiles"
@@ -42,6 +44,20 @@ func NewManager(logLevel LogLevel) *Manager {
 
 	if err := mgr.initDatabase(); err != nil {
 		return nil
+	}
+
+	mgr.pruneInterval = 1 * time.Minute
+	pruneAgeStr, isSet := os.LookupEnv(PRUNE_AGE_ENV)
+	if !isSet {
+		mgr.pruneAge = 1 * time.Hour
+	} else {
+		age, err := time.ParseDuration(pruneAgeStr)
+		if err != nil {
+			mgr.log.errorf("invalid prune age '%s': %s", pruneAgeStr, err)
+			mgr.pruneAge = 1 * time.Hour
+		} else {
+			mgr.pruneAge = age
+		}
 	}
 
 	return mgr
@@ -232,6 +248,8 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 	if err != nil {
 		return 0, err
 	}
+
+	m.checkPrune()
 
 	cMeta, err := m.GetChallengeMetadata(build.Challenge)
 	if err != nil {
@@ -574,10 +592,62 @@ func (m *Manager) DumpState(challenges []ChallengeId) ([]*ChallengeMetadata, err
 	return results, nil
 }
 
-// Returns a byte array with the contents of the Dockerfile associated with
-// `challengeType` (if it exists).  If the challenge type does not exist, then
-// an empty array is returned.
+// Prints out the Dockerfile associated with the given challenge type.
 func (m *Manager) GetDockerfile(challengeType string) []byte {
 	dockerfile, _ := dockerfiles.Get(challengeType)
 	return dockerfile
+}
+
+func (m *Manager) checkPrune() {
+	if m.pruneAge <= 0 {
+		return
+	}
+
+	now := time.Now().UnixNano()
+	last := atomic.LoadInt64(&m.lastPruneUnix)
+
+	// Fast path: interval hasn't elapsed — no lock needed.
+	if time.Duration(now-last) < m.pruneInterval {
+		return
+	}
+
+	// CAS to claim the prune slot; only one goroutine wins per interval.
+	if !atomic.CompareAndSwapInt64(&m.lastPruneUnix, last, now) {
+		return
+	}
+
+	go func() {
+		if err := m.Prune(); err != nil {
+			m.log.errorf("failed to prune old instances: %s", err)
+		}
+	}()
+}
+
+func (m *Manager) Prune() error {
+	m.log.infof("pruning on-demand instances older than %s", m.pruneAge)
+
+	// Manual builds start with the manual schema prefix. We want to find
+	// instances associated with these builds that are older than the prune age.
+	// We also prune those with NULL created_at (legacy entries).
+	query := `
+		DELETE FROM instances
+		WHERE id IN (
+			SELECT i.id
+			FROM instances AS i
+			JOIN builds AS b ON i.build = b.id
+			WHERE b.schema LIKE ?
+			AND (i.created_at IS NULL OR i.created_at < datetime('now', ?))
+		);`
+
+	res, err := m.db.Exec(query, manualSchemaPrefix+"%", fmt.Sprintf("-%d seconds", int(m.pruneAge.Seconds())))
+	if err != nil {
+		return err
+	}
+
+	count, _ := res.RowsAffected()
+	if count > 0 {
+		m.log.infof("pruned %d old instances", count)
+	}
+
+	return nil
 }
