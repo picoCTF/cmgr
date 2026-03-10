@@ -920,6 +920,117 @@ func TestLookupBuildMetadataCacheIsolation(t *testing.T) {
 	}
 }
 
+// TestLookupChallengeMetadataCacheSafety verifies that mutating the returned
+// *ChallengeMetadata does not corrupt the cached value. Specifically it checks
+// that PortMap, Overrides, and the Ulimits/DroppedCaps slices inside
+// ContainerOptions are all deep-copied so that a caller cannot accidentally
+// modify the cache through the returned pointer.
+func TestLookupChallengeMetadataCacheSafety(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+
+	// ContainerOptions for the default host are stored under the "" key in Overrides.
+	// lookupChallengeMetadata sets ChallengeOptions.ContainerOptions = Overrides[""].
+	challenge := &ChallengeMetadata{
+		Id:            "test/cache-safety",
+		Name:          "Cache Safety Test",
+		Namespace:     "test",
+		ChallengeType: "custom",
+		Description:   "original description",
+		Hints:         []string{"hint1"},
+		Tags:          []string{"tag1"},
+		Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+		PortMap:       map[string]PortInfo{"http": {Host: "challenge", Port: 8080}},
+		Attributes:    map[string]string{"key": "value"},
+		Path:          "/tmp/test/problem.md",
+		ChallengeOptions: ChallengeOptions{
+			Overrides: map[string]ContainerOptions{
+				"":    {Ulimits: []string{"nofile=1024:2048"}, DroppedCaps: []string{"CAP_NET_RAW"}},
+				"web": {Ulimits: []string{"nofile=512:512"}},
+			},
+		},
+	}
+
+	errs := mgr.addChallenges([]*ChallengeMetadata{challenge})
+	if len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
+	// First lookup – populate the cache.
+	first, err := mgr.lookupChallengeMetadata("test/cache-safety")
+	if err != nil {
+		t.Fatalf("first lookupChallengeMetadata failed: %s", err)
+	}
+
+	// Mutate every mutable field of the returned value.
+	first.PortMap["http"] = PortInfo{Host: "mutated", Port: 9999}
+	first.PortMap["extra"] = PortInfo{Host: "extra", Port: 1234}
+	first.Hints[0] = "mutated-hint"
+	first.Tags[0] = "mutated-tag"
+	first.Attributes["key"] = "mutated"
+	// ContainerOptions is a copy of Overrides[""] after lookup; mutate its slices.
+	first.ChallengeOptions.ContainerOptions.Ulimits[0] = "nofile=9999:9999"
+	first.ChallengeOptions.ContainerOptions.DroppedCaps[0] = "CAP_MUTATED"
+	// Also mutate the Overrides map entries directly.
+	webOpts := first.ChallengeOptions.Overrides["web"]
+	webOpts.Ulimits[0] = "nofile=9999:9999"
+	first.ChallengeOptions.Overrides["web"] = webOpts
+	first.ChallengeOptions.Overrides["extra"] = ContainerOptions{Ulimits: []string{"extra=1"}}
+
+	// Second lookup – must return the original, unmodified values.
+	second, err := mgr.lookupChallengeMetadata("test/cache-safety")
+	if err != nil {
+		t.Fatalf("second lookupChallengeMetadata failed: %s", err)
+	}
+
+	// PortMap
+	if pi, ok := second.PortMap["http"]; !ok || pi.Host != "challenge" || pi.Port != 8080 {
+		t.Errorf("PortMap['http'] corrupted: got %+v", second.PortMap["http"])
+	}
+	if _, ok := second.PortMap["extra"]; ok {
+		t.Error("PortMap['extra'] should not exist in cached value")
+	}
+
+	// Hints
+	if len(second.Hints) != 1 || second.Hints[0] != "hint1" {
+		t.Errorf("Hints corrupted: got %v", second.Hints)
+	}
+
+	// Tags
+	if len(second.Tags) != 1 || second.Tags[0] != "tag1" {
+		t.Errorf("Tags corrupted: got %v", second.Tags)
+	}
+
+	// Attributes
+	if second.Attributes["key"] != "value" {
+		t.Errorf("Attributes corrupted: got %q", second.Attributes["key"])
+	}
+
+	// ContainerOptions.Ulimits (reads from Overrides[""] on lookup)
+	if len(second.ChallengeOptions.Ulimits) != 1 || second.ChallengeOptions.Ulimits[0] != "nofile=1024:2048" {
+		t.Errorf("ContainerOptions.Ulimits corrupted: got %v", second.ChallengeOptions.Ulimits)
+	}
+
+	// ContainerOptions.DroppedCaps
+	if len(second.ChallengeOptions.DroppedCaps) != 1 || second.ChallengeOptions.DroppedCaps[0] != "CAP_NET_RAW" {
+		t.Errorf("ContainerOptions.DroppedCaps corrupted: got %v", second.ChallengeOptions.DroppedCaps)
+	}
+
+	// Overrides – existing entry
+	webOptsSecond, ok := second.ChallengeOptions.Overrides["web"]
+	if !ok {
+		t.Fatal("Overrides['web'] missing from cached value")
+	}
+	if len(webOptsSecond.Ulimits) != 1 || webOptsSecond.Ulimits[0] != "nofile=512:512" {
+		t.Errorf("Overrides['web'].Ulimits corrupted: got %v", webOptsSecond.Ulimits)
+	}
+
+	// Overrides – extra entry must not appear
+	if _, ok := second.ChallengeOptions.Overrides["extra"]; ok {
+		t.Error("Overrides['extra'] should not exist in cached value")
+	}
+}
+
 // setupPortAssignments is a helper that creates a challenge, build, and instance
 // with the given ports assigned in the database, and returns the manager.
 // portLow and portHigh configure the manager's port range for bitset tests.
