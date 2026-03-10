@@ -2,6 +2,7 @@ package cmgr
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -831,6 +832,94 @@ func TestDatabasePortOperations(t *testing.T) {
 	}
 }
 
+// TestLookupBuildMetadataCacheIsolation verifies that mutating the LookupData map or
+// Images[i].Ports slice in a returned BuildMetadata does not affect subsequent lookups,
+// confirming that lookupBuildMetadata returns deep-copied cache entries.
+func TestLookupBuildMetadataCacheIsolation(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+
+	challenge := &ChallengeMetadata{
+		Id:            "test/cache-isolation",
+		Name:          "Cache Isolation",
+		Namespace:     "test",
+		ChallengeType: "custom",
+		Description:   "Testing cache isolation",
+		Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+		PortMap:       map[string]PortInfo{},
+		Tags:          []string{},
+		Attributes:    map[string]string{},
+		Path:          "/tmp/test/problem.md",
+		ChallengeOptions: ChallengeOptions{
+			Overrides: map[string]ContainerOptions{"": {}},
+		},
+	}
+	errs := mgr.addChallenges([]*ChallengeMetadata{challenge})
+	if len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
+	build := &BuildMetadata{
+		Flag:          "",
+		Seed:          7,
+		Format:        "flag{%s}",
+		Challenge:     "test/cache-isolation",
+		Schema:        "manual-test",
+		InstanceCount: DYNAMIC_INSTANCES,
+	}
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("openBuild failed: %s", err)
+	}
+	build.Flag = "flag{cache_test}"
+	build.HasArtifacts = false
+	build.LookupData = map[string]string{"original_key": "original_val"}
+	build.Images = []Image{
+		{Host: "challenge", Ports: []string{"80/tcp", "443/tcp"}},
+	}
+	if err := mgr.finalizeBuild(build); err != nil {
+		t.Fatalf("finalizeBuild failed: %s", err)
+	}
+
+	// First lookup — keep a reference and mutate it
+	first, err := mgr.lookupBuildMetadata(build.Id)
+	if err != nil {
+		t.Fatalf("first lookupBuildMetadata failed: %s", err)
+	}
+
+	// Mutate the returned LookupData map
+	first.LookupData["original_key"] = "mutated_val"
+	first.LookupData["injected_key"] = "injected_val"
+
+	// Mutate the returned Images[0].Ports slice
+	first.Images[0].Ports[0] = "9999/tcp"
+	first.Images[0].Ports = append(first.Images[0].Ports, "extra/tcp")
+
+	// Second lookup must reflect the original stored values, not the mutations
+	second, err := mgr.lookupBuildMetadata(build.Id)
+	if err != nil {
+		t.Fatalf("second lookupBuildMetadata failed: %s", err)
+	}
+
+	if second.LookupData["original_key"] != "original_val" {
+		t.Errorf("LookupData['original_key'] mutated in cache: got %q, want %q",
+			second.LookupData["original_key"], "original_val")
+	}
+	if _, ok := second.LookupData["injected_key"]; ok {
+		t.Errorf("injected_key unexpectedly present in cached LookupData")
+	}
+	if len(second.Images) == 0 {
+		t.Fatal("second lookup returned no images")
+	}
+	if second.Images[0].Ports[0] != "80/tcp" {
+		t.Errorf("Images[0].Ports[0] mutated in cache: got %q, want %q",
+			second.Images[0].Ports[0], "80/tcp")
+	}
+	if len(second.Images[0].Ports) != 2 {
+		t.Errorf("Images[0].Ports length mutated in cache: got %d, want 2",
+			len(second.Images[0].Ports))
+	}
+}
+
 // TestLookupChallengeMetadataCacheSafety verifies that mutating the returned
 // *ChallengeMetadata does not corrupt the cached value. Specifically it checks
 // that PortMap, Overrides, and the Ulimits/DroppedCaps slices inside
@@ -939,6 +1028,228 @@ func TestLookupChallengeMetadataCacheSafety(t *testing.T) {
 	// Overrides – extra entry must not appear
 	if _, ok := second.ChallengeOptions.Overrides["extra"]; ok {
 		t.Error("Overrides['extra'] should not exist in cached value")
+	}
+}
+
+// setupPortAssignments is a helper that creates a challenge, build, and instance
+// with the given ports assigned in the database, and returns the manager.
+// portLow and portHigh configure the manager's port range for bitset tests.
+func setupPortAssignments(t *testing.T, portLow, portHigh int, ports map[string]int) *Manager {
+	t.Helper()
+	mgr := setupTestManager(t)
+	mgr.portLow = portLow
+	mgr.portHigh = portHigh
+
+	challenge := &ChallengeMetadata{
+		Id:            "test/port-assign-test",
+		Name:          "Port Assign Test",
+		Namespace:     "test",
+		ChallengeType: "custom",
+		Description:   "Testing port assignments",
+		Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+		PortMap:       map[string]PortInfo{},
+		Tags:          []string{},
+		Attributes:    map[string]string{},
+		Path:          "/tmp/test/problem.md",
+		ChallengeOptions: ChallengeOptions{
+			Overrides: map[string]ContainerOptions{
+				"": {},
+			},
+		},
+	}
+	errs := mgr.addChallenges([]*ChallengeMetadata{challenge})
+	if len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
+	build := &BuildMetadata{
+		Seed:          1,
+		Format:        "flag{%s}",
+		Challenge:     "test/port-assign-test",
+		Schema:        "manual-test",
+		InstanceCount: DYNAMIC_INSTANCES,
+	}
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("openBuild failed: %s", err)
+	}
+	build.Flag = "flag{port_assign}"
+	build.Images = []Image{{Host: "challenge", Ports: []string{}}}
+	build.LookupData = map[string]string{}
+	if err := mgr.finalizeBuild(build); err != nil {
+		t.Fatalf("finalizeBuild failed: %s", err)
+	}
+
+	instance := &InstanceMetadata{
+		Build:      build.Id,
+		Ports:      map[string]int{},
+		Containers: []string{},
+	}
+	if err := mgr.openInstance(instance); err != nil {
+		t.Fatalf("openInstance failed: %s", err)
+	}
+	instance.Ports = ports
+	instance.Containers = []string{}
+	if err := mgr.finalizeInstance(instance); err != nil {
+		t.Fatalf("finalizeInstance failed: %s", err)
+	}
+
+	return mgr
+}
+
+// TestUsedPortBitset verifies that usedPortBitset returns a bitset that marks
+// exactly the ports recorded in portAssignments within [portLow, portHigh].
+func TestUsedPortBitset(t *testing.T) {
+	// Use a small range so we can reason about exact bit positions.
+	const portLow = 30000
+	const portHigh = 30063 // exactly 64 ports → one uint64 word
+
+	assignedPorts := map[string]int{
+		"http":  30000, // bit 0
+		"https": 30001, // bit 1
+		"ssh":   30063, // bit 63
+	}
+
+	mgr := setupPortAssignments(t, portLow, portHigh, assignedPorts)
+	defer mgr.db.Close()
+
+	bitset, err := mgr.usedPortBitset()
+	if err != nil {
+		t.Fatalf("usedPortBitset failed: %s", err)
+	}
+	if len(bitset) == 0 {
+		t.Fatal("expected non-empty bitset")
+	}
+
+	for name, port := range assignedPorts {
+		p := port - portLow
+		word := p / 64
+		bit := uint(p) % 64
+		if bitset[word]&(1<<bit) == 0 {
+			t.Errorf("port %d (%s) should be marked in bitset but is not", port, name)
+		}
+	}
+
+	// Verify that an unassigned port in the range is NOT marked.
+	unassigned := 30002
+	p := unassigned - portLow
+	word := p / 64
+	bit := uint(p) % 64
+	if bitset[word]&(1<<bit) != 0 {
+		t.Errorf("port %d should not be marked in bitset", unassigned)
+	}
+}
+
+// TestUsedPortBitsetNoRange verifies that usedPortBitset returns nil when no
+// port range is configured (portLow == 0).
+func TestUsedPortBitsetNoRange(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+	// portLow defaults to 0 from setupTestManager
+
+	bitset, err := mgr.usedPortBitset()
+	if err != nil {
+		t.Fatalf("usedPortBitset failed: %s", err)
+	}
+	if bitset != nil {
+		t.Errorf("expected nil bitset when portLow==0, got %v", bitset)
+	}
+}
+
+// TestGetFreePortNoRange verifies that getFreePort returns an empty string
+// (ephemeral port mode) when no port range is configured.
+func TestGetFreePortNoRange(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+	// portLow defaults to 0
+
+	port, err := mgr.getFreePort()
+	if err != nil {
+		t.Fatalf("getFreePort failed: %s", err)
+	}
+	if port != "" {
+		t.Errorf("expected empty string for ephemeral port mode, got %q", port)
+	}
+}
+
+// TestGetFreePortWithRange verifies that getFreePort returns a valid port
+// within [portLow, portHigh] when the range is configured and ports are free.
+func TestGetFreePortWithRange(t *testing.T) {
+	const portLow = 40000
+	const portHigh = 40010
+
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+	mgr.portLow = portLow
+	mgr.portHigh = portHigh
+
+	portStr, err := mgr.getFreePort()
+	if err != nil {
+		t.Fatalf("getFreePort failed: %s", err)
+	}
+	if portStr == "" {
+		t.Fatal("expected a non-empty port string")
+	}
+
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatalf("returned port is not a number: %q", portStr)
+	}
+	if port < portLow || port > portHigh {
+		t.Errorf("returned port %d is outside range [%d, %d]", port, portLow, portHigh)
+	}
+}
+
+// TestGetFreePortSkipsUsed verifies that getFreePort does not return a port
+// that is already recorded in portAssignments.
+func TestGetFreePortSkipsUsed(t *testing.T) {
+	const portLow = 50000
+	const portHigh = 50002 // only 3 ports: 50000, 50001, 50002
+
+	// Assign two of the three ports, leaving only 50002 free.
+	assignedPorts := map[string]int{
+		"svc1": 50000,
+		"svc2": 50001,
+	}
+
+	mgr := setupPortAssignments(t, portLow, portHigh, assignedPorts)
+	defer mgr.db.Close()
+
+	portStr, err := mgr.getFreePort()
+	if err != nil {
+		t.Fatalf("getFreePort failed: %s", err)
+	}
+
+	var port int
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+		t.Fatalf("returned port is not a number: %q", portStr)
+	}
+	if port < portLow || port > portHigh {
+		t.Errorf("returned port %d is outside range [%d, %d]", port, portLow, portHigh)
+	}
+	for name, assigned := range assignedPorts {
+		if port == assigned {
+			t.Errorf("returned port %d (%s) is already assigned", port, name)
+		}
+	}
+}
+
+// TestGetFreePortAllUsed verifies that getFreePort returns an error when all
+// ports in the configured range are already assigned.
+func TestGetFreePortAllUsed(t *testing.T) {
+	const portLow = 60000
+	const portHigh = 60001 // only 2 ports
+
+	assignedPorts := map[string]int{
+		"svc1": 60000,
+		"svc2": 60001,
+	}
+
+	mgr := setupPortAssignments(t, portLow, portHigh, assignedPorts)
+	defer mgr.db.Close()
+
+	_, err := mgr.getFreePort()
+	if err == nil {
+		t.Error("expected an error when all ports are in use, got nil")
 	}
 }
 
