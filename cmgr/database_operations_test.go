@@ -831,6 +831,94 @@ func TestDatabasePortOperations(t *testing.T) {
 	}
 }
 
+// TestLookupBuildMetadataCacheIsolation verifies that mutating the LookupData map or
+// Images[i].Ports slice in a returned BuildMetadata does not affect subsequent lookups,
+// confirming that lookupBuildMetadata returns deep-copied cache entries.
+func TestLookupBuildMetadataCacheIsolation(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+
+	challenge := &ChallengeMetadata{
+		Id:            "test/cache-isolation",
+		Name:          "Cache Isolation",
+		Namespace:     "test",
+		ChallengeType: "custom",
+		Description:   "Testing cache isolation",
+		Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+		PortMap:       map[string]PortInfo{},
+		Tags:          []string{},
+		Attributes:    map[string]string{},
+		Path:          "/tmp/test/problem.md",
+		ChallengeOptions: ChallengeOptions{
+			Overrides: map[string]ContainerOptions{"": {}},
+		},
+	}
+	errs := mgr.addChallenges([]*ChallengeMetadata{challenge})
+	if len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
+	build := &BuildMetadata{
+		Flag:          "",
+		Seed:          7,
+		Format:        "flag{%s}",
+		Challenge:     "test/cache-isolation",
+		Schema:        "manual-test",
+		InstanceCount: DYNAMIC_INSTANCES,
+	}
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("openBuild failed: %s", err)
+	}
+	build.Flag = "flag{cache_test}"
+	build.HasArtifacts = false
+	build.LookupData = map[string]string{"original_key": "original_val"}
+	build.Images = []Image{
+		{Host: "challenge", Ports: []string{"80/tcp", "443/tcp"}},
+	}
+	if err := mgr.finalizeBuild(build); err != nil {
+		t.Fatalf("finalizeBuild failed: %s", err)
+	}
+
+	// First lookup — keep a reference and mutate it
+	first, err := mgr.lookupBuildMetadata(build.Id)
+	if err != nil {
+		t.Fatalf("first lookupBuildMetadata failed: %s", err)
+	}
+
+	// Mutate the returned LookupData map
+	first.LookupData["original_key"] = "mutated_val"
+	first.LookupData["injected_key"] = "injected_val"
+
+	// Mutate the returned Images[0].Ports slice
+	first.Images[0].Ports[0] = "9999/tcp"
+	first.Images[0].Ports = append(first.Images[0].Ports, "extra/tcp")
+
+	// Second lookup must reflect the original stored values, not the mutations
+	second, err := mgr.lookupBuildMetadata(build.Id)
+	if err != nil {
+		t.Fatalf("second lookupBuildMetadata failed: %s", err)
+	}
+
+	if second.LookupData["original_key"] != "original_val" {
+		t.Errorf("LookupData['original_key'] mutated in cache: got %q, want %q",
+			second.LookupData["original_key"], "original_val")
+	}
+	if _, ok := second.LookupData["injected_key"]; ok {
+		t.Errorf("injected_key unexpectedly present in cached LookupData")
+	}
+	if len(second.Images) == 0 {
+		t.Fatal("second lookup returned no images")
+	}
+	if second.Images[0].Ports[0] != "80/tcp" {
+		t.Errorf("Images[0].Ports[0] mutated in cache: got %q, want %q",
+			second.Images[0].Ports[0], "80/tcp")
+	}
+	if len(second.Images[0].Ports) != 2 {
+		t.Errorf("Images[0].Ports length mutated in cache: got %d, want 2",
+			len(second.Images[0].Ports))
+	}
+}
+
 // setupTestManager creates a Manager with a temporary on-disk database file for testing
 func setupTestManager(t *testing.T) *Manager {
 	t.Helper()
