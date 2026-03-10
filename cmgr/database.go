@@ -130,8 +130,6 @@ const schemaQuery string = `
 			ON UPDATE RESTRICT ON DELETE RESTRICT
 	);
 
-	CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);
-
 	CREATE TABLE IF NOT EXISTS portAssignments (
 		instance INTEGER NOT NULL,
 		name TEXT NOT NULL,
