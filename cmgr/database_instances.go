@@ -179,13 +179,13 @@ func (m *Manager) recordSolve(instance *InstanceMetadata) error {
 	if err == nil {
 		err = txn.Commit()
 		if err != nil {
-			m.log.errorf("failed to commit deletion of container metadata: %s", err)
+			m.log.errorf("failed to commit solve recording: %s", err)
 		} else {
 			// Invalidate build cache after updating lastsolved
 			m.buildCache.Delete(instance.Build)
 		}
 	} else {
-		m.log.errorf("failed to delete container metadata: %s", err)
+		m.log.errorf("failed to record solve: %s", err)
 		closeErr := txn.Rollback()
 		if closeErr != nil {
 			m.log.errorf("rollback failed: %s", err)
