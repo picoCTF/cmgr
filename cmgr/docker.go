@@ -120,9 +120,9 @@ func (m *Manager) getFreePort() (string, error) {
 	// Get currently used ports as a bitset for memory efficiency
 	bitset, err := m.usedPortBitset()
 	if err != nil {
-		// Fallback to ephemeral port if we can't get the bitset,
-		// though this shouldn't happen under normal operation.
-		return "", nil
+		// Propagate the error so callers don't silently fall back to
+		// ephemeral ports when a fixed port range is configured.
+		return "", fmt.Errorf("failed to get used ports: %w", err)
 	}
 
 	// Pick a random starting point in the port range...
