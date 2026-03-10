@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -48,7 +49,7 @@ type Manager struct {
 	authString           string
 	portLow              int
 	portHigh             int
-	lastPruneUnix        int64 // Unix nanoseconds; accessed atomically
+	lastPruneUnix        atomic.Int64 // Unix nanoseconds
 	pruneInterval        time.Duration
 	pruneAge             time.Duration
 	challengeCache       sync.Map
