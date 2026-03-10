@@ -29,7 +29,6 @@ const openBuildQuery string = `
     	instancecount = excluded.instancecount;`
 
 func (m *Manager) openBuild(build *BuildMetadata) error {
-	m.buildCache.Delete(build.Id)
 	_, err := m.db.NamedExec(openBuildQuery, build)
 	m.log.debugf("Opening %v", build)
 
@@ -55,6 +54,7 @@ func (m *Manager) openBuild(build *BuildMetadata) error {
 	}
 
 	m.log.debugf("Build of %s has ID %d", build.Challenge, build.Id)
+	m.buildCache.Delete(build.Id)
 	return nil
 }
 
@@ -67,7 +67,6 @@ const finalizeBuildQuery string = `
 	WHERE id = :id;`
 
 func (m *Manager) finalizeBuild(build *BuildMetadata) error {
-	m.buildCache.Delete(build.Id)
 	txn := m.db.MustBegin()
 	res, err := txn.NamedExec(finalizeBuildQuery, build)
 
@@ -188,13 +187,14 @@ func (m *Manager) finalizeBuild(build *BuildMetadata) error {
 	err = txn.Commit()
 	if err != nil { // It's undocumented what this means...
 		m.log.error(err)
+	} else {
+		m.buildCache.Delete(build.Id)
 	}
 
 	return err
 }
 
 func (m *Manager) removeBuildMetadata(build BuildId) error {
-	m.buildCache.Delete(build)
 	txn := m.db.MustBegin()
 	_, err := txn.Exec("DELETE FROM images WHERE build=?", build)
 
@@ -223,6 +223,8 @@ func (m *Manager) removeBuildMetadata(build BuildId) error {
 	err = txn.Commit()
 	if err != nil {
 		m.log.errorf("failed to commit deletion of build: %s", err)
+	} else {
+		m.buildCache.Delete(build)
 	}
 
 	return err
@@ -305,6 +307,7 @@ func (m *Manager) lookupBuildMetadata(build BuildId) (*BuildMetadata, error) {
 
 	if err == nil {
 		m.buildCache.Store(build, metadata)
+		return copyBuildMetadata(metadata), err
 	}
 
 	return metadata, err
@@ -323,15 +326,18 @@ func (m *Manager) removedSchemaBuilds(schema string) ([]BuildId, error) {
 }
 
 func (m *Manager) lockSchema(schema string) error {
-	// Invalidate cache for all builds in this schema before updating instancecount.
-	// This closes the window where a concurrent reader could see a stale InstanceCount.
+	// Invalidate cache for all builds in this schema after updating instancecount.
 	var ids []BuildId
 	_ = m.db.Select(&ids, "SELECT id FROM builds WHERE schema = ?;", schema)
-	for _, id := range ids {
-		m.buildCache.Delete(id)
-	}
 
 	_, err := m.db.Exec("UPDATE builds SET instancecount = ? WHERE schema = ?;", LOCKED, schema)
+
+	if err == nil {
+		for _, id := range ids {
+			m.buildCache.Delete(id)
+		}
+	}
+
 	return err
 }
 

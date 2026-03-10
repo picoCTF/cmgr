@@ -168,6 +168,7 @@ func (m *Manager) lookupChallengeMetadata(challenge ChallengeId) (*ChallengeMeta
 
 	if err == nil {
 		m.challengeCache.Store(challenge, metadata)
+		return copyChallengeMetadata(metadata), err
 	}
 
 	return metadata, err
@@ -179,7 +180,6 @@ func (m *Manager) addChallenges(addedChallenges []*ChallengeMetadata) []error {
 	for _, metadata := range addedChallenges {
 		txn := m.db.MustBegin()
 
-		m.challengeCache.Delete(metadata.Id)
 		_, err := txn.NamedExec(challengeInsertQuery, metadata)
 		if err != nil {
 			m.log.error(err)
@@ -358,6 +358,8 @@ func (m *Manager) addChallenges(addedChallenges []*ChallengeMetadata) []error {
 		if err := txn.Commit(); err != nil { // It's undocumented what this means...
 			m.log.error(err)
 			errs = append(errs, err)
+		} else {
+			m.challengeCache.Delete(metadata.Id)
 		}
 	}
 	return errs
@@ -368,7 +370,6 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 	for _, metadata := range updatedChallenges {
 		txn := m.db.MustBegin()
 
-		m.challengeCache.Delete(metadata.Id)
 		_, err := txn.NamedExec(challengeUpdateQuery, metadata)
 		if err != nil {
 			m.log.error(err)
@@ -625,6 +626,8 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 			continue // next challenge
 		}
 
+		m.challengeCache.Delete(metadata.Id)
+
 		if rebuild {
 			buildIds := []BuildId{}
 			err = m.db.Select(&buildIds, "SELECT id FROM builds WHERE challenge=?;", metadata.Id)
@@ -709,7 +712,6 @@ func (m *Manager) removeChallenges(removedChallenges []*ChallengeMetadata) error
 	for _, metadata := range removedChallenges {
 		// This should throw an error and cause a rollback when builds exist for
 		// a challenge we are removing.
-		m.challengeCache.Delete(metadata.Id)
 		_, err := txn.Exec("DELETE FROM challenges WHERE id = ?;", metadata.Id)
 		if err != nil {
 			m.log.error(err)
@@ -725,6 +727,10 @@ func (m *Manager) removeChallenges(removedChallenges []*ChallengeMetadata) error
 	if err := txn.Commit(); err != nil { // It's undocumented what this means...
 		m.log.error(err)
 		return err
+	}
+
+	for _, metadata := range removedChallenges {
+		m.challengeCache.Delete(metadata.Id)
 	}
 
 	return nil
