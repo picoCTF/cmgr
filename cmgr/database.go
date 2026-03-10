@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -197,9 +198,20 @@ func (m *Manager) initDatabase() error {
 		return err
 	}
 
-	// Handle migration for existing databases (idempotent: errors silently ignored)
-	_, _ = db.Exec("ALTER TABLE instances ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP;")
-	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);")
+	// Handle migration for existing databases: add created_at column if not
+	// already present (ignore "duplicate column name" since that means we've
+	// already run this migration; all other errors are unexpected).
+	_, err = db.Exec("ALTER TABLE instances ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP;")
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		m.log.errorf("could not migrate instances table: %s", err)
+		return err
+	}
+
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);")
+	if err != nil {
+		m.log.errorf("could not create instanceCreatedAtIndex index: %s", err)
+		return err
+	}
 
 	var fkeysEnforced bool
 	err = db.QueryRow("PRAGMA foreign_keys;").Scan(&fkeysEnforced)
