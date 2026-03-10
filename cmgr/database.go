@@ -289,7 +289,7 @@ func (m *Manager) usedPortBitset() ([]uint64, error) {
 	}
 
 	numPorts := m.portHigh - m.portLow + 1
-	bitset := make([]uint64, (numPorts/64)+1)
+	bitset := make([]uint64, (numPorts+63)/64)
 
 	rows, err := m.db.Query("SELECT port FROM portAssignments WHERE port BETWEEN ? AND ?", m.portLow, m.portHigh)
 	if err != nil {
