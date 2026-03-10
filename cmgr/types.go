@@ -3,6 +3,7 @@ package cmgr
 import (
 	"context"
 	"math/rand"
+	"time"
 
 	"github.com/docker/docker/client"
 	"github.com/jmoiron/sqlx"
@@ -19,6 +20,8 @@ const (
 	IFACE_ENV          string = "CMGR_INTERFACE"
 	PORTS_ENV          string = "CMGR_PORTS"
 	DISK_QUOTA_ENV     string = "CMGR_ENABLE_DISK_QUOTAS"
+	PRUNE_AGE_ENV      string = "CMGR_PRUNE_AGE"
+	DB_WAL_ENV         string = "CMGR_DB_WAL"
 
 	DYNAMIC_INSTANCES int = -1
 	LOCKED            int = -2
@@ -44,6 +47,9 @@ type Manager struct {
 	authString           string
 	portLow              int
 	portHigh             int
+	lastPruneUnix        int64 // Unix nanoseconds; accessed atomically
+	pruneInterval        time.Duration
+	pruneAge             time.Duration
 }
 
 type PortInfo struct {
@@ -144,6 +150,7 @@ type InstanceMetadata struct {
 	Ports      map[string]int `json:"ports,omitempty"`
 	Containers []string       `json:"containers"`
 	LastSolved int64          `json:"last_solved"`
+	CreatedAt  *time.Time     `json:"created_at" db:"created_at"`
 	Build      BuildId        `json:"build_id"`
 }
 

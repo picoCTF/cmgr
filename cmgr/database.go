@@ -125,6 +125,7 @@ const schemaQuery string = `
 		id INTEGER PRIMARY KEY,
 		lastsolved INTEGER,
 		build INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (build) REFERENCES builds (id)
 			ON UPDATE RESTRICT ON DELETE RESTRICT
 	);
@@ -179,7 +180,12 @@ func (m *Manager) initDatabase() error {
 		dbPath = "cmgr.db"
 	}
 
-	db, err := sqlx.Open("sqlite3", dbPath+"?_fk=true")
+	dsn := dbPath + "?_fk=true&_journal_mode=WAL"
+	if walEnv, ok := os.LookupEnv(DB_WAL_ENV); ok && (walEnv == "false" || walEnv == "0" || walEnv == "off") {
+		dsn = dbPath + "?_fk=true"
+	}
+
+	db, err := sqlx.Open("sqlite3", dsn)
 	if err != nil {
 		m.log.errorf("could not open database: %s", err)
 		return err
@@ -191,6 +197,28 @@ func (m *Manager) initDatabase() error {
 	_, err = db.Exec(schemaQuery)
 	if err != nil {
 		m.log.errorf("could not set database schema: %s", err)
+		return err
+	}
+
+	// Handle migration for existing databases: add created_at column if not
+	// already present. Check via PRAGMA to avoid relying on error-string matching.
+	var colCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = 'created_at';").Scan(&colCount)
+	if err != nil {
+		m.log.errorf("could not check instances table schema: %s", err)
+		return err
+	}
+	if colCount == 0 {
+		_, err = db.Exec("ALTER TABLE instances ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP;")
+		if err != nil {
+			m.log.errorf("could not migrate instances table: %s", err)
+			return err
+		}
+	}
+
+	_, err = db.Exec("CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);")
+	if err != nil {
+		m.log.errorf("could not create instanceCreatedAtIndex index: %s", err)
 		return err
 	}
 

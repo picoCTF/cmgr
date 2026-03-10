@@ -82,6 +82,30 @@ adjusting the kernel parameter.
   XFS backing storage. Otherwise, the creation of containers with disk quotas will fail at runtime.
   When unset, any specified quotas are ignored.
 
+- *CMGR\_PRUNE\_AGE*: the maximum age for on-demand challenge instances (i.e.,
+  those started via `cmgr start` or the `POST /builds/<id>` API endpoint, as
+  opposed to schema-managed instances). Instances older than this value are
+  automatically removed from the database during the next `cmgr start` or
+  API-triggered launch (with at most a 1-minute check interval). The value
+  must be a valid Go duration string (e.g., `1h`, `30m`, `24h`). Defaults to
+  `1h`. Set to `0` to disable automatic pruning entirely.
+
+  **Important:** This value should be set *greater* than any external
+  instance-stopping interval (e.g., a Celery task that calls `DELETE
+  /instances/<id>` on a schedule).  If the prune age is shorter than the stop
+  interval, the DB row will be removed before the stop request arrives,
+  causing a 404 error. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more
+  details.
+
+- *CMGR\_DB\_WAL*: controls whether SQLite
+  [WAL journaling](https://www.sqlite.org/wal.html) is enabled for the cmgr database.
+  WAL mode improves write throughput and reduces lock contention under high
+  instance-launch concurrency, at the cost of creating two additional sidecar
+  files (`<db>-wal` and `<db>-shm`) in the same directory as the database.
+  **Do not enable on network-mounted filesystems** (NFS, SMB, etc.) as the
+  required shared-memory locking is typically unsupported and may cause
+  corruption. **Enabled by default.** Set to `false`, `off`, or `0` to disable.
+
 Additionally, we rely on the Docker SDK's ability to self-configure base off
 environment variables.  The documentation for those variables can be found at
 [https://docs.docker.com/engine/reference/commandline/cli/](https://docs.docker.com/engine/reference/commandline/cli/).
