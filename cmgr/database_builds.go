@@ -326,19 +326,25 @@ func (m *Manager) removedSchemaBuilds(schema string) ([]BuildId, error) {
 }
 
 func (m *Manager) lockSchema(schema string) error {
-	// Invalidate cache for all builds in this schema after updating instancecount.
+	// Get all build IDs for this schema before locking
 	var ids []BuildId
-	_ = m.db.Select(&ids, "SELECT id FROM builds WHERE schema = ?;", schema)
-
-	_, err := m.db.Exec("UPDATE builds SET instancecount = ? WHERE schema = ?;", LOCKED, schema)
-
-	if err == nil {
-		for _, id := range ids {
-			m.buildCache.Delete(id)
-		}
+	err := m.db.Select(&ids, "SELECT id FROM builds WHERE schema = ?;", schema)
+	if err != nil {
+		return fmt.Errorf("failed to get build IDs for schema %s: %w", schema, err)
 	}
 
-	return err
+	// Update the schema to locked state
+	_, err = m.db.Exec("UPDATE builds SET instancecount = ? WHERE schema = ?;", LOCKED, schema)
+	if err != nil {
+		return err
+	}
+
+	// Invalidate cache for all builds in this schema after successful update
+	for _, id := range ids {
+		m.buildCache.Delete(id)
+	}
+
+	return nil
 }
 
 func (m *Manager) getSchemaBuilds(schema string) ([]BuildId, error) {

@@ -180,6 +180,9 @@ func (m *Manager) recordSolve(instance *InstanceMetadata) error {
 		err = txn.Commit()
 		if err != nil {
 			m.log.errorf("failed to commit deletion of container metadata: %s", err)
+		} else {
+			// Invalidate build cache after updating lastsolved
+			m.buildCache.Delete(instance.Build)
 		}
 	} else {
 		m.log.errorf("failed to delete container metadata: %s", err)
