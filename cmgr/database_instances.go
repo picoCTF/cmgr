@@ -197,14 +197,9 @@ func (m *Manager) recordSolve(instance *InstanceMetadata) error {
 
 func (m *Manager) lookupBuildInstances(build BuildId) ([]*InstanceMetadata, error) {
 	var instances []*InstanceMetadata
-	err := m.db.Select(&instances, "SELECT * FROM instances WHERE build = ?", build)
-	if err != nil {
-		return nil, err
-	}
+	txn := m.db.MustBegin()
 
-	if len(instances) == 0 {
-		return instances, nil
-	}
+	err := txn.Select(&instances, "SELECT * FROM instances WHERE build = ?", build)
 
 	// Fetch all ports for these instances
 	ports := []struct {
@@ -212,7 +207,33 @@ func (m *Manager) lookupBuildInstances(build BuildId) ([]*InstanceMetadata, erro
 		Name     string     `db:"name"`
 		Port     int        `db:"port"`
 	}{}
-	err = m.db.Select(&ports, "SELECT instance, name, port FROM portAssignments WHERE instance IN (SELECT id FROM instances WHERE build = ?)", build)
+	if err == nil && len(instances) > 0 {
+		err = txn.Select(&ports, "SELECT instance, name, port FROM portAssignments WHERE instance IN (SELECT id FROM instances WHERE build = ?)", build)
+	}
+
+	// Fetch all containers for these instances
+	containers := []struct {
+		Instance InstanceId `db:"instance"`
+		Id       string     `db:"id"`
+	}{}
+	if err == nil && len(instances) > 0 {
+		err = txn.Select(&containers, "SELECT instance, id FROM containers WHERE instance IN (SELECT id FROM instances WHERE build = ?)", build)
+	}
+
+	if err == nil {
+		err = txn.Commit()
+		if err != nil {
+			m.log.errorf("failed to commit read-only transaction: %s", err)
+		}
+	} else {
+		m.log.errorf("read of database failed: %s", err)
+		closeErr := txn.Rollback()
+		if closeErr != nil {
+			m.log.errorf("rollback failed: %s", closeErr)
+			err = closeErr
+		}
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -224,16 +245,6 @@ func (m *Manager) lookupBuildInstances(build BuildId) ([]*InstanceMetadata, erro
 			portMap[p.Instance] = make(map[string]int)
 		}
 		portMap[p.Instance][p.Name] = p.Port
-	}
-
-	// Fetch all containers for these instances
-	containers := []struct {
-		Instance InstanceId `db:"instance"`
-		Id       string     `db:"id"`
-	}{}
-	err = m.db.Select(&containers, "SELECT instance, id FROM containers WHERE instance IN (SELECT id FROM instances WHERE build = ?)", build)
-	if err != nil {
-		return nil, err
 	}
 
 	// Map containers to instances
