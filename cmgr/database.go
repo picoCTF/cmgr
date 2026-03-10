@@ -169,7 +169,16 @@ const schemaQuery string = `
 		cgroupparent TEXT NOT NULL,
 		FOREIGN KEY (challenge) REFERENCES challenges (id)
 			ON UPDATE CASCADE ON DELETE CASCADE
-	);`
+	);
+
+	CREATE INDEX IF NOT EXISTS instanceBuildIndex ON instances(build);
+	CREATE INDEX IF NOT EXISTS portAssignmentInstanceIndex ON portAssignments(instance);
+	CREATE INDEX IF NOT EXISTS portAssignmentPortIndex ON portAssignments(port);
+	CREATE INDEX IF NOT EXISTS containerInstanceIndex ON containers(instance);
+	CREATE INDEX IF NOT EXISTS imageBuildIndex ON images(build);
+	CREATE INDEX IF NOT EXISTS imagePortImageIndex ON imagePorts(image);
+	CREATE INDEX IF NOT EXISTS lookupDataBuildIndex ON lookupData(build);
+`
 
 // Connects to the desired database (creating it if it does not exist) and then
 // ensures that the necessary tables and indexes exist and that the sqlite
