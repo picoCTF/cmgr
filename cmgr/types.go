@@ -149,7 +149,7 @@ type InstanceMetadata struct {
 	Ports      map[string]int `json:"ports,omitempty"`
 	Containers []string       `json:"containers"`
 	LastSolved int64          `json:"last_solved"`
-	CreatedAt  string         `json:"created_at" db:"created_at"`
+	CreatedAt  *time.Time     `json:"created_at" db:"created_at"`
 	Build      BuildId        `json:"build_id"`
 }
 
