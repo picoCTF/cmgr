@@ -64,16 +64,37 @@ func copyChallengeMetadata(src *ChallengeMetadata) *ChallengeMetadata {
 			dst.Attributes[k] = v
 		}
 	}
+
+	// Deep-copy the embedded ContainerOptions (includes slices)
+	dst.ChallengeOptions.ContainerOptions = copyContainerOptions(src.ChallengeOptions.ContainerOptions)
+
 	if src.ChallengeOptions.Overrides != nil {
 		dst.ChallengeOptions.Overrides = make(map[string]ContainerOptions, len(src.ChallengeOptions.Overrides))
 		for k, v := range src.ChallengeOptions.Overrides {
-			dst.ChallengeOptions.Overrides[k] = v
+			dst.ChallengeOptions.Overrides[k] = copyContainerOptions(v)
 		}
 	}
 	// Builds is intentionally not copied: it is populated by callers, not cached.
 	dst.Builds = nil
 
 	return &dst
+}
+
+// copyContainerOptions deep-copies ContainerOptions, including slice fields.
+func copyContainerOptions(src ContainerOptions) ContainerOptions {
+	dst := src // shallow copy
+
+	if src.Ulimits != nil {
+		dst.Ulimits = make([]string, len(src.Ulimits))
+		copy(dst.Ulimits, src.Ulimits)
+	}
+
+	if src.DroppedCaps != nil {
+		dst.DroppedCaps = make([]string, len(src.DroppedCaps))
+		copy(dst.DroppedCaps, src.DroppedCaps)
+	}
+
+	return dst
 }
 
 func (m *Manager) lookupChallengeMetadata(challenge ChallengeId) (*ChallengeMetadata, error) {
