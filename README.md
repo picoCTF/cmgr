@@ -97,6 +97,15 @@ adjusting the kernel parameter.
   causing a 404 error. See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more
   details.
 
+- *CMGR\_DB\_WAL*: controls whether SQLite
+  [WAL journaling](https://www.sqlite.org/wal.html) is enabled for the cmgr database.
+  WAL mode improves write throughput and reduces lock contention under high
+  instance-launch concurrency, at the cost of creating two additional sidecar
+  files (`<db>-wal` and `<db>-shm`) in the same directory as the database.
+  **Do not enable on network-mounted filesystems** (NFS, SMB, etc.) as the
+  required shared-memory locking is typically unsupported and may cause
+  corruption. **Enabled by default.** Set to `false`, `off`, or `0` to disable.
+
 Additionally, we rely on the Docker SDK's ability to self-configure base off
 environment variables.  The documentation for those variables can be found at
 [https://docs.docker.com/engine/reference/commandline/cli/](https://docs.docker.com/engine/reference/commandline/cli/).

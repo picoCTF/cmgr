@@ -182,7 +182,12 @@ func (m *Manager) initDatabase() error {
 		dbPath = "cmgr.db"
 	}
 
-	db, err := sqlx.Open("sqlite3", dbPath+"?_fk=true&_journal_mode=WAL")
+	dsn := dbPath + "?_fk=true&_journal_mode=WAL"
+	if walEnv, ok := os.LookupEnv(DB_WAL_ENV); ok && (walEnv == "false" || walEnv == "0" || walEnv == "off") {
+		dsn = dbPath + "?_fk=true"
+	}
+
+	db, err := sqlx.Open("sqlite3", dsn)
 	if err != nil {
 		m.log.errorf("could not open database: %s", err)
 		return err

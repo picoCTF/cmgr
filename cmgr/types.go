@@ -21,6 +21,7 @@ const (
 	PORTS_ENV          string = "CMGR_PORTS"
 	DISK_QUOTA_ENV     string = "CMGR_ENABLE_DISK_QUOTAS"
 	PRUNE_AGE_ENV      string = "CMGR_PRUNE_AGE"
+	DB_WAL_ENV         string = "CMGR_DB_WAL"
 
 	DYNAMIC_INSTANCES int = -1
 	LOCKED            int = -2

@@ -96,6 +96,12 @@ Relevant environment variables:
       does not exist on the host running the Docker daemon, Docker will silently
       ignore this value and instead bind to the loopback address
 
+  CMGR_DB_WAL - controls whether SQLite WAL journaling mode is enabled;
+      on by default for improved throughput under high concurrency;
+      creates <db>-wal and <db>-shm sidecar files; do NOT use on network-mounted
+      filesystems (NFS, SMB) as this may cause corruption; set to 'false'
+      to disable.
+
   Note: The Docker client is configured via Docker's standard environment
       variables.  See https://docs.docker.com/engine/reference/commandline/cli/
       for specific details.
