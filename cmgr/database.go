@@ -173,6 +173,7 @@ const schemaQuery string = `
 
 	CREATE INDEX IF NOT EXISTS instanceBuildIndex ON instances(build);
 	CREATE INDEX IF NOT EXISTS portAssignmentInstanceIndex ON portAssignments(instance);
+	CREATE INDEX IF NOT EXISTS portAssignmentPortIndex ON portAssignments(port);
 	CREATE INDEX IF NOT EXISTS containerInstanceIndex ON containers(instance);
 	CREATE INDEX IF NOT EXISTS imageBuildIndex ON images(build);
 	CREATE INDEX IF NOT EXISTS imagePortImageIndex ON imagePorts(image);
