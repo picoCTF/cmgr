@@ -194,9 +194,13 @@ func (m *Manager) recordSolve(instance *InstanceMetadata) error {
 
 func (m *Manager) lookupBuildInstances(build BuildId) ([]*InstanceMetadata, error) {
 	var instances []*InstanceMetadata
-	txn := m.db.MustBegin()
+	txn, err := m.db.Beginx()
+	if err != nil {
+		return nil, err
+	}
+	defer txn.Rollback() //nolint:errcheck
 
-	err := txn.Select(&instances, "SELECT * FROM instances WHERE build = ?", build)
+	err = txn.Select(&instances, "SELECT * FROM instances WHERE build = ?", build)
 
 	// Fetch all ports for these instances
 	ports := []struct {
@@ -205,7 +209,7 @@ func (m *Manager) lookupBuildInstances(build BuildId) ([]*InstanceMetadata, erro
 		Port     int        `db:"port"`
 	}{}
 	if err == nil && len(instances) > 0 {
-		err = txn.Select(&ports, "SELECT instance, name, port FROM portAssignments WHERE instance IN (SELECT id FROM instances WHERE build = ?)", build)
+		err = txn.Select(&ports, "SELECT p.instance, p.name, p.port FROM portAssignments p JOIN instances i ON p.instance = i.id WHERE i.build = ?", build)
 	}
 
 	// Fetch all containers for these instances
@@ -214,24 +218,16 @@ func (m *Manager) lookupBuildInstances(build BuildId) ([]*InstanceMetadata, erro
 		Id       string     `db:"id"`
 	}{}
 	if err == nil && len(instances) > 0 {
-		err = txn.Select(&containers, "SELECT instance, id FROM containers WHERE instance IN (SELECT id FROM instances WHERE build = ?)", build)
-	}
-
-	if err == nil {
-		err = txn.Commit()
-		if err != nil {
-			m.log.errorf("failed to commit read-only transaction: %s", err)
-		}
-	} else {
-		m.log.errorf("read of database failed: %s", err)
-		closeErr := txn.Rollback()
-		if closeErr != nil {
-			m.log.errorf("rollback failed: %s", closeErr)
-			err = closeErr
-		}
+		err = txn.Select(&containers, "SELECT c.instance, c.id FROM containers c JOIN instances i ON c.instance = i.id WHERE i.build = ?", build)
 	}
 
 	if err != nil {
+		m.log.errorf("read of database failed: %s", err)
+		return nil, err
+	}
+
+	if err = txn.Commit(); err != nil {
+		m.log.errorf("failed to commit read-only transaction: %s", err)
 		return nil, err
 	}
 
