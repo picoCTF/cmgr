@@ -48,7 +48,7 @@ type Manager struct {
 	authString           string
 	portLow              int
 	portHigh             int
-	lastPruneUnix        atomic.Int64 // Unix nanoseconds
+	lastPruneUnix        atomic.Int64 // atomic UnixNano timestamp used as CAS gate for prune interval
 	pruneInterval        time.Duration
 	pruneAge             time.Duration
 }
