@@ -9,7 +9,7 @@ require (
 	github.com/docker/go-units v0.5.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/mattn/go-sqlite3 v1.14.22
-	github.com/yuin/goldmark v1.4.13
+	github.com/yuin/goldmark v1.7.16
 	gopkg.in/yaml.v2 v2.4.0
 )
 
