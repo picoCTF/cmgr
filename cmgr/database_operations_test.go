@@ -1054,6 +1054,269 @@ func TestGetFreePortAllUsed(t *testing.T) {
 	}
 }
 
+// TestLookupBuildInstances verifies that lookupBuildInstances returns instances with
+// Ports and Containers correctly populated, and handles multiple instances per build.
+// It also confirms equivalence with the getBuildInstances()+lookupInstanceMetadata loop
+// it replaced.
+func TestLookupBuildInstances(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+
+	// Helper to set up a challenge and build
+	setupBuild := func(challengeId ChallengeId, schema string) *BuildMetadata {
+		t.Helper()
+		challenge := &ChallengeMetadata{
+			Id:            challengeId,
+			Name:          string(challengeId),
+			Namespace:     "test",
+			ChallengeType: "custom",
+			Description:   "lookup build instances test",
+			Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+			PortMap:       map[string]PortInfo{},
+			Tags:          []string{},
+			Attributes:    map[string]string{},
+			Path:          "/tmp/test/problem.md",
+			ChallengeOptions: ChallengeOptions{
+				Overrides: map[string]ContainerOptions{"": {}},
+			},
+		}
+		errs := mgr.addChallenges([]*ChallengeMetadata{challenge})
+		if len(errs) > 0 {
+			t.Fatalf("addChallenges failed: %v", errs)
+		}
+		build := &BuildMetadata{
+			Seed:          1,
+			Format:        "flag{%s}",
+			Challenge:     challengeId,
+			Schema:        schema,
+			InstanceCount: DYNAMIC_INSTANCES,
+		}
+		if err := mgr.openBuild(build); err != nil {
+			t.Fatalf("openBuild failed: %s", err)
+		}
+		build.Flag = "flag{test}"
+		build.Images = []Image{{Host: "challenge", Ports: []string{"80/tcp"}}}
+		build.LookupData = map[string]string{}
+		if err := mgr.finalizeBuild(build); err != nil {
+			t.Fatalf("finalizeBuild failed: %s", err)
+		}
+		return build
+	}
+
+	// Helper to open and finalize an instance with given ports and containers
+	addInstance := func(build *BuildMetadata, ports map[string]int, containers []string) *InstanceMetadata {
+		t.Helper()
+		inst := &InstanceMetadata{Build: build.Id}
+		if err := mgr.openInstance(inst); err != nil {
+			t.Fatalf("openInstance failed: %s", err)
+		}
+		inst.Ports = ports
+		inst.Containers = containers
+		if err := mgr.finalizeInstance(inst); err != nil {
+			t.Fatalf("finalizeInstance failed: %s", err)
+		}
+		return inst
+	}
+
+	t.Run("empty build returns no instances", func(t *testing.T) {
+		build := setupBuild("test/lbi-empty", "lbi-empty")
+		instances, err := mgr.lookupBuildInstances(build.Id)
+		if err != nil {
+			t.Fatalf("lookupBuildInstances failed: %s", err)
+		}
+		if len(instances) != 0 {
+			t.Errorf("expected 0 instances, got %d", len(instances))
+		}
+	})
+
+	t.Run("single instance with ports and containers", func(t *testing.T) {
+		build := setupBuild("test/lbi-single", "lbi-single")
+		inst := addInstance(build,
+			map[string]int{"http": 8080, "https": 8443},
+			[]string{"container-aaa", "container-bbb"},
+		)
+
+		instances, err := mgr.lookupBuildInstances(build.Id)
+		if err != nil {
+			t.Fatalf("lookupBuildInstances failed: %s", err)
+		}
+		if len(instances) != 1 {
+			t.Fatalf("expected 1 instance, got %d", len(instances))
+		}
+
+		got := instances[0]
+		if got.Id != inst.Id {
+			t.Errorf("expected instance ID %d, got %d", inst.Id, got.Id)
+		}
+		if got.Build != build.Id {
+			t.Errorf("expected build ID %d, got %d", build.Id, got.Build)
+		}
+		if got.Ports["http"] != 8080 {
+			t.Errorf("expected Ports[http]=8080, got %d", got.Ports["http"])
+		}
+		if got.Ports["https"] != 8443 {
+			t.Errorf("expected Ports[https]=8443, got %d", got.Ports["https"])
+		}
+		if len(got.Containers) != 2 {
+			t.Errorf("expected 2 containers, got %d: %v", len(got.Containers), got.Containers)
+		} else {
+			containerSet := make(map[string]bool)
+			for _, c := range got.Containers {
+				containerSet[c] = true
+			}
+			if !containerSet["container-aaa"] || !containerSet["container-bbb"] {
+				t.Errorf("expected containers [container-aaa, container-bbb], got %v", got.Containers)
+			}
+		}
+	})
+
+	t.Run("multiple instances each with distinct ports and containers", func(t *testing.T) {
+		build := setupBuild("test/lbi-multi", "lbi-multi")
+
+		inst1 := addInstance(build,
+			map[string]int{"http": 9001},
+			[]string{"c-alpha"},
+		)
+		inst2 := addInstance(build,
+			map[string]int{"http": 9002, "debug": 9003},
+			[]string{"c-beta", "c-gamma"},
+		)
+		inst3 := addInstance(build,
+			map[string]int{},
+			[]string{},
+		)
+
+		instances, err := mgr.lookupBuildInstances(build.Id)
+		if err != nil {
+			t.Fatalf("lookupBuildInstances failed: %s", err)
+		}
+		if len(instances) != 3 {
+			t.Fatalf("expected 3 instances, got %d", len(instances))
+		}
+
+		// Build a map by ID for order-independent checking
+		byID := make(map[InstanceId]*InstanceMetadata, len(instances))
+		for _, inst := range instances {
+			byID[inst.Id] = inst
+		}
+
+		// Instance 1
+		got1, ok := byID[inst1.Id]
+		if !ok {
+			t.Fatalf("instance %d not found in results", inst1.Id)
+		}
+		if got1.Ports["http"] != 9001 {
+			t.Errorf("inst1: expected Ports[http]=9001, got %d", got1.Ports["http"])
+		}
+		if len(got1.Containers) != 1 || got1.Containers[0] != "c-alpha" {
+			t.Errorf("inst1: unexpected containers: %v", got1.Containers)
+		}
+
+		// Instance 2
+		got2, ok := byID[inst2.Id]
+		if !ok {
+			t.Fatalf("instance %d not found in results", inst2.Id)
+		}
+		if got2.Ports["http"] != 9002 {
+			t.Errorf("inst2: expected Ports[http]=9002, got %d", got2.Ports["http"])
+		}
+		if got2.Ports["debug"] != 9003 {
+			t.Errorf("inst2: expected Ports[debug]=9003, got %d", got2.Ports["debug"])
+		}
+		if len(got2.Containers) != 2 {
+			t.Errorf("inst2: expected 2 containers, got %d: %v", len(got2.Containers), got2.Containers)
+		} else {
+			containerSet := make(map[string]bool)
+			for _, c := range got2.Containers {
+				containerSet[c] = true
+			}
+			if !containerSet["c-beta"] || !containerSet["c-gamma"] {
+				t.Errorf("inst2: expected containers [c-beta, c-gamma], got %v", got2.Containers)
+			}
+		}
+
+		// Instance 3 (no ports, no containers)
+		got3, ok := byID[inst3.Id]
+		if !ok {
+			t.Fatalf("instance %d not found in results", inst3.Id)
+		}
+		if len(got3.Ports) != 0 {
+			t.Errorf("inst3: expected empty ports, got %v", got3.Ports)
+		}
+		if len(got3.Containers) != 0 {
+			t.Errorf("inst3: expected empty containers, got %v", got3.Containers)
+		}
+	})
+
+	t.Run("equivalence with getBuildInstances+lookupInstanceMetadata loop", func(t *testing.T) {
+		build := setupBuild("test/lbi-equiv", "lbi-equiv")
+		addInstance(build, map[string]int{"svc": 7001}, []string{"c-one"})
+		addInstance(build, map[string]int{"svc": 7002}, []string{"c-two", "c-three"})
+
+		// New batch approach
+		batchInstances, err := mgr.lookupBuildInstances(build.Id)
+		if err != nil {
+			t.Fatalf("lookupBuildInstances failed: %s", err)
+		}
+
+		// Legacy loop approach: getBuildInstances + lookupInstanceMetadata per ID
+		ids, err := mgr.getBuildInstances(build.Id)
+		if err != nil {
+			t.Fatalf("getBuildInstances failed: %s", err)
+		}
+		loopInstances := make([]*InstanceMetadata, 0, len(ids))
+		for _, id := range ids {
+			meta, err := mgr.lookupInstanceMetadata(id)
+			if err != nil {
+				t.Fatalf("lookupInstanceMetadata(%d) failed: %s", id, err)
+			}
+			loopInstances = append(loopInstances, meta)
+		}
+
+		if len(batchInstances) != len(loopInstances) {
+			t.Fatalf("length mismatch: batch=%d loop=%d", len(batchInstances), len(loopInstances))
+		}
+
+		// Index batch results by ID
+		batchByID := make(map[InstanceId]*InstanceMetadata, len(batchInstances))
+		for _, inst := range batchInstances {
+			batchByID[inst.Id] = inst
+		}
+
+		for _, loopInst := range loopInstances {
+			batchInst, ok := batchByID[loopInst.Id]
+			if !ok {
+				t.Errorf("instance %d from loop not found in batch results", loopInst.Id)
+				continue
+			}
+			if batchInst.Build != loopInst.Build {
+				t.Errorf("instance %d: Build mismatch batch=%d loop=%d", loopInst.Id, batchInst.Build, loopInst.Build)
+			}
+			if len(batchInst.Ports) != len(loopInst.Ports) {
+				t.Errorf("instance %d: Ports length mismatch batch=%d loop=%d", loopInst.Id, len(batchInst.Ports), len(loopInst.Ports))
+			}
+			for name, port := range loopInst.Ports {
+				if batchInst.Ports[name] != port {
+					t.Errorf("instance %d: Ports[%s] mismatch batch=%d loop=%d", loopInst.Id, name, batchInst.Ports[name], port)
+				}
+			}
+			if len(batchInst.Containers) != len(loopInst.Containers) {
+				t.Errorf("instance %d: Containers length mismatch batch=%d loop=%d", loopInst.Id, len(batchInst.Containers), len(loopInst.Containers))
+			} else {
+				loopContainerSet := make(map[string]bool, len(loopInst.Containers))
+				for _, c := range loopInst.Containers {
+					loopContainerSet[c] = true
+				}
+				for _, c := range batchInst.Containers {
+					if !loopContainerSet[c] {
+						t.Errorf("instance %d: batch container %q not found in loop result %v", loopInst.Id, c, loopInst.Containers)
+					}
+				}
+			}
+		}
+	})
+}
+
 // setupTestManager creates a Manager with a temporary on-disk database file for testing
 func setupTestManager(t *testing.T) *Manager {
 	t.Helper()
