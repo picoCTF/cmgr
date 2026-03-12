@@ -191,7 +191,9 @@ func (m *Manager) initDatabase() error {
 
 	// _busy_timeout=50 gives SQLite up to 50ms to retry acquiring a lock before
 	// returning SQLITE_BUSY; avoids instant failures under concurrent access.
-	dsn := dbPath + "?_fk=true&_journal_mode=WAL&_busy_timeout=50"
+	// _synchronous=NORMAL is safe in WAL mode: WAL provides crash consistency,
+	// so only the very last committed transaction risks loss on catastrophic failure.
+	dsn := dbPath + "?_fk=true&_journal_mode=WAL&_busy_timeout=50&_synchronous=NORMAL"
 	if walEnv, ok := os.LookupEnv(DB_WAL_ENV); ok && (walEnv == "false" || walEnv == "0" || walEnv == "off") {
 		dsn = dbPath + "?_fk=true&_busy_timeout=50"
 	}
