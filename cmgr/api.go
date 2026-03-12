@@ -269,7 +269,7 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 				portName := revPortMap[portStr]
 				hostPort, err := m.reservePort(iMeta.Id, portName)
 				if err != nil {
-					m.stopInstance(iMeta)
+					m.stopInstance(iMeta, build)
 					return 0, err
 				}
 				iMeta.Ports[portName] = hostPort
@@ -277,7 +277,7 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 		}
 	}
 
-	err = m.startNetwork(iMeta, cMeta.ChallengeOptions.NetworkOptions)
+	err = m.startNetwork(iMeta, build, cMeta.ChallengeOptions.NetworkOptions)
 	if err != nil {
 		return 0, err
 	}
@@ -286,7 +286,7 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 	if err != nil {
 		// It is possible we are in a partially deployed state.  Make sure
 		// we are torn down, but ignore the returned error.
-		m.stopInstance(iMeta)
+		m.stopInstance(iMeta, build)
 	}
 
 	return iMeta.Id, err
@@ -309,16 +309,16 @@ func (m *Manager) Stop(instance InstanceId) error {
 	if bMeta.InstanceCount != DYNAMIC_INSTANCES {
 		return errors.New("locked build: change the schema definition to stop this instance")
 	}
-	return m.stopInstance(iMeta)
+	return m.stopInstance(iMeta, bMeta)
 }
 
-func (m *Manager) stopInstance(instance *InstanceMetadata) error {
+func (m *Manager) stopInstance(instance *InstanceMetadata, build *BuildMetadata) error {
 	err := m.stopContainers(instance)
 	if err != nil {
 		return err
 	}
 
-	err = m.stopNetwork(instance)
+	err = m.stopNetwork(instance, build)
 	if err != nil {
 		return err
 	}
@@ -458,7 +458,7 @@ func (m *Manager) convergeSchema(schema *Schema) []error {
 					continue
 				}
 
-				err = m.stopInstance(iMeta)
+				err = m.stopInstance(iMeta, buildMeta)
 				if err != nil {
 					errs = append(errs, err)
 				}
@@ -499,11 +499,12 @@ func (m *Manager) cleanupSchemaResources(name string) error {
 	instances, err := m.removedSchemaInstances(name)
 	for _, id := range instances {
 		iMeta, err := m.lookupInstanceMetadata(id)
+		bMeta, err := m.lookupBuildMetadata(iMeta.Build)
 		if err != nil {
 			return err
 		}
 
-		err = m.stopInstance(iMeta)
+		err = m.stopInstance(iMeta, bMeta)
 		if err != nil {
 			return err
 		}

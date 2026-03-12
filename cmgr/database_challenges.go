@@ -635,10 +635,10 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 							err = m.stopContainers(instance)
 						}
 						if err == nil {
-							err = m.stopNetwork(instance)
+							err = m.stopNetwork(instance, build)
 						}
 						if err == nil && build.InstanceCount != DYNAMIC_INSTANCES {
-							err = m.startNetwork(instance, cMeta.ChallengeOptions.NetworkOptions)
+							err = m.startNetwork(instance, build, cMeta.ChallengeOptions.NetworkOptions)
 						}
 						if err == nil && build.InstanceCount != DYNAMIC_INSTANCES {
 							err = m.startContainers(build, instance, cMeta.ChallengeOptions.Overrides, nil)

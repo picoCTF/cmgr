@@ -60,6 +60,28 @@ func (m *Manager) initDocker() error {
 
 	m.log.infof("connected to docker (API v%s)", ping.APIVersion)
 
+	// Ensure shared network pool exists for single-container challenges
+	netSpec := types.NetworkCreate{
+		Driver: "bridge",
+		Options: map[string]string{
+			"com.docker.network.bridge.enable_icc": "false",
+		},
+		IPAM: &network.IPAM{
+			Config: []network.IPAMConfig{
+				{
+					// Shared pool for single-container challenges
+					// For multiple containers, set daemon config with default
+					// pool /16 with size 29 = 8 addresses, 6 usable
+					Subnet: "10.255.0.0/16",
+				},
+			},
+		},
+	}
+	_, err = m.cli.NetworkCreate(m.ctx, "cmgr-shared", netSpec)
+	if err != nil && !strings.Contains(err.Error(), "already exists") {
+		m.log.warnf("could not create shared network pool (cmgr-shared): %s", err)
+	}
+
 	concurrencyLimit := 2
 	if envStr, isSet := os.LookupEnv("CMGR_CONCURRENT_LAUNCHES"); isSet {
 		if parsed, err := strconv.Atoi(envStr); err == nil && (parsed == 1 || parsed == 2) {
@@ -584,7 +606,11 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	return err
 }
 
-func (m *Manager) startNetwork(instance *InstanceMetadata, opts NetworkOptions) error {
+func (m *Manager) startNetwork(instance *InstanceMetadata, build *BuildMetadata, opts NetworkOptions) error {
+	if len(build.Images) == 1 {
+		// Single-container challenges use the pre-created cmgr-shared pool
+		return nil
+	}
 	netSpec := types.NetworkCreate{
 		Driver: "bridge",
 	}
@@ -596,7 +622,12 @@ func (m *Manager) startNetwork(instance *InstanceMetadata, opts NetworkOptions) 
 	return err
 }
 
-func (m *Manager) stopNetwork(instance *InstanceMetadata) error {
+func (m *Manager) stopNetwork(instance *InstanceMetadata, build *BuildMetadata) error {
+	if len(build.Images) == 1 {
+		// Shared network should not be removed
+		return nil
+	}
+
 	networkName := instance.getNetworkName()
 	err := m.cli.NetworkRemove(m.ctx, networkName)
 	if err != nil {
@@ -621,6 +652,9 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 
 	// Call create in docker
 	netname := instance.getNetworkName()
+	if len(build.Images) == 1 {
+		netname = "cmgr-shared"
+	}
 	for _, image := range build.Images {
 		if image.Host == "builder" {
 			continue
@@ -635,7 +669,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			} else {
 				hostPort = strconv.Itoa(instance.Ports[revPortMap[portStr]])
 			}
-			
+
 			exposedPorts[port] = struct{}{}
 			publishedPorts[port] = []nat.PortBinding{
 				{HostIP: m.challengeInterface, HostPort: hostPort},
