@@ -249,6 +249,9 @@ Relevant environment variables:
   CMGR_PRUNE_AGE - the maximum age for on-demand challenge instances; old
       instances are automatically pruned from the database (defaults to '1h')
 
+  CMGR_CONCURRENT_LAUNCHES - the maximum number of concurrent container
+      launches allowed (defaults to 2); allowed values are 1 or 2.
+
   Note: The Docker client is configured via Docker's standard environment
       variables.  See https://docs.docker.com/engine/reference/commandline/cli/
       for specific details.

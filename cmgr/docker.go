@@ -12,13 +12,11 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	dockeropts "github.com/docker/cli/opts"
@@ -44,13 +42,34 @@ func (m *Manager) initDocker() error {
 	m.cli = cli
 	m.ctx = context.Background()
 
-	ping, err := cli.Ping(m.ctx)
+	var ping types.Ping
+	for attempt := 1; attempt <= 3; attempt++ {
+		ping, err = cli.Ping(m.ctx)
+		if err == nil {
+			break
+		}
+		if attempt < 3 {
+			m.log.warnf("failed to ping docker engine (attempt %d/3): %s. retrying...", attempt, err)
+			time.Sleep(1 * time.Second)
+		}
+	}
 	if err != nil {
 		m.log.errorf("could not connect to docker engine: %s", err)
 		return err
 	}
 
 	m.log.infof("connected to docker (API v%s)", ping.APIVersion)
+
+	concurrencyLimit := 2
+	if envStr, isSet := os.LookupEnv("CMGR_CONCURRENT_LAUNCHES"); isSet {
+		if parsed, err := strconv.Atoi(envStr); err == nil && (parsed == 1 || parsed == 2) {
+			concurrencyLimit = parsed
+		} else {
+			m.log.warnf("invalid CMGR_CONCURRENT_LAUNCHES value '%s' (only 1 or 2 allowed), defaulting to %d", envStr, concurrencyLimit)
+		}
+	}
+	m.log.infof("setting launch concurrency limit to %d", concurrencyLimit)
+	m.launchSemaphore = make(chan struct{}, concurrencyLimit)
 
 	chalInterface, isSet := os.LookupEnv(IFACE_ENV)
 	if !isSet {
@@ -105,43 +124,6 @@ func getPortRange() (int, int, error) {
 	}
 
 	return low, high, err
-}
-
-// Returns a string to simplify integration with Docker's Go API.  Specifically,
-// an empty string will tell it to use an ephemeral port while a non-empty string
-// (even if it is "0") will tell it to attempt binding to that specific port.
-func (m *Manager) getFreePort() (string, error) {
-	if m.portLow == 0 {
-		return "", nil
-	}
-
-	numPorts := m.portHigh - m.portLow + 1
-
-	// Get currently used ports as a bitset for memory efficiency
-	bitset, err := m.usedPortBitset()
-	if err != nil {
-		// Fallback to ephemeral port if we can't get the bitset,
-		// though this shouldn't happen under normal operation.
-		return "", nil
-	}
-
-	// Pick a random starting point in the port range...
-	port := rand.Intn(numPorts) + m.portLow
-
-	// Sweep through ports looking for a free one...
-	for i := 0; i < numPorts; i++ {
-		p := port - m.portLow
-		if (bitset[p/64] & (1 << (uint(p) % 64))) == 0 {
-			return fmt.Sprint(port), nil
-		}
-
-		port = port + 1
-		if port > m.portHigh {
-			port = m.portLow
-		}
-	}
-
-	return "", fmt.Errorf("All ports between %d and %d are in use", m.portLow, m.portHigh)
 }
 
 func (b *BuildMetadata) makeFlag() *string {
@@ -628,23 +610,15 @@ func (m *Manager) stopNetwork(instance *InstanceMetadata) error {
 	return err
 }
 
-// This approach is pretty heavy-handed and effectively serializes the creation
-// of all challenges that expose ports.  If this becomes a performance issue,
-// may need to look at fully managing ports in memory rather than a hybrid
-// with the SQLite database.
-var portLock sync.Mutex
-
 func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions, envVars map[string]string) error {
+	m.launchSemaphore <- struct{}{}
+	defer func() { <-m.launchSemaphore }()
+
 	revPortMap, err := m.getReversePortMap(build.Challenge)
 	if err != nil {
 		return err
 	}
 
-	if len(revPortMap) != 0 {
-		// No need to lock the port mapping if we are not mapping any ports...
-		portLock.Lock()
-		defer portLock.Unlock()
-	}
 	// Call create in docker
 	netname := instance.getNetworkName()
 	for _, image := range build.Images {
@@ -655,10 +629,13 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		publishedPorts := nat.PortMap{}
 		for _, portStr := range image.Ports {
 			port := nat.Port(portStr)
-			hostPort, err := m.getFreePort()
-			if err != nil {
-				return err
+			var hostPort string
+			if m.portLow == 0 {
+				hostPort = ""
+			} else {
+				hostPort = strconv.Itoa(instance.Ports[revPortMap[portStr]])
 			}
+			
 			exposedPorts[port] = struct{}{}
 			publishedPorts[port] = []nat.PortBinding{
 				{HostIP: m.challengeInterface, HostPort: hostPort},

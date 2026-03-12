@@ -255,6 +255,28 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 		return 0, err
 	}
 
+	if m.portLow != 0 {
+		revPortMap, err := m.getReversePortMap(build.Challenge)
+		if err != nil {
+			return 0, err
+		}
+
+		for _, image := range build.Images {
+			if image.Host == "builder" {
+				continue
+			}
+			for _, portStr := range image.Ports {
+				portName := revPortMap[portStr]
+				hostPort, err := m.reservePort(iMeta.Id, portName)
+				if err != nil {
+					m.stopInstance(iMeta)
+					return 0, err
+				}
+				iMeta.Ports[portName] = hostPort
+			}
+		}
+	}
+
 	err = m.startNetwork(iMeta, cMeta.ChallengeOptions.NetworkOptions)
 	if err != nil {
 		return 0, err
@@ -638,6 +660,18 @@ func (m *Manager) Prune() error {
 	count, _ := res.RowsAffected()
 	if count > 0 {
 		m.log.infof("pruned %d old instances", count)
+	}
+
+	// Clean up unfinalized instances (crashed launches) older than 5 minutes
+	gcQuery := `DELETE FROM instances WHERE is_finalized = 0 AND created_at < datetime('now', '-5 minutes');`
+	gcRes, err := m.db.Exec(gcQuery)
+	if err == nil {
+		gcCount, _ := gcRes.RowsAffected()
+		if gcCount > 0 {
+			m.log.infof("garbage collected %d unfinalized instances", gcCount)
+		}
+	} else {
+		m.log.errorf("failed to garbage collect unfinalized instances: %s", err)
 	}
 
 	return nil

@@ -105,6 +105,9 @@ Relevant environment variables:
       filesystems (NFS, SMB) as this may cause corruption; set to 'false'
       to disable.
 
+  CMGR_CONCURRENT_LAUNCHES - the maximum number of concurrent container 
+      launches allowed (defaults to 2); allowed values are 1 or 2.
+
   Note: The Docker client is configured via Docker's standard environment
       variables.  See https://docs.docker.com/engine/reference/commandline/cli/
       for specific details.
