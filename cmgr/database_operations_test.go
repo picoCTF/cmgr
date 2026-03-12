@@ -2,7 +2,6 @@ package cmgr
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -890,9 +889,13 @@ func setupPortAssignments(t *testing.T, portLow, portHigh int, ports map[string]
 	}
 	instance.Ports = ports
 	instance.Containers = []string{}
+
+	savedPortLow := mgr.portLow
+	mgr.portLow = 0
 	if err := mgr.finalizeInstance(instance); err != nil {
 		t.Fatalf("finalizeInstance failed: %s", err)
 	}
+	mgr.portLow = savedPortLow
 
 	return mgr
 }
@@ -956,25 +959,22 @@ func TestUsedPortBitsetNoRange(t *testing.T) {
 	}
 }
 
-// TestGetFreePortNoRange verifies that getFreePort returns an empty string
-// (ephemeral port mode) when no port range is configured.
-func TestGetFreePortNoRange(t *testing.T) {
+// TestReservePortNoRange verifies that reservePort returns an error
+// when no port range is configured.
+func TestReservePortNoRange(t *testing.T) {
 	mgr := setupTestManager(t)
 	defer mgr.db.Close()
 	// portLow defaults to 0
 
-	port, err := mgr.getFreePort()
-	if err != nil {
-		t.Fatalf("getFreePort failed: %s", err)
-	}
-	if port != "" {
-		t.Errorf("expected empty string for ephemeral port mode, got %q", port)
+	_, err := mgr.reservePort(1, "test")
+	if err == nil {
+		t.Errorf("expected error when port reservation disabled, got nil")
 	}
 }
 
-// TestGetFreePortWithRange verifies that getFreePort returns a valid port
+// TestReservePortWithRange verifies that reservePort returns a valid port
 // within [portLow, portHigh] when the range is configured and ports are free.
-func TestGetFreePortWithRange(t *testing.T) {
+func TestReservePortWithRange(t *testing.T) {
 	const portLow = 40000
 	const portHigh = 40010
 
@@ -982,27 +982,35 @@ func TestGetFreePortWithRange(t *testing.T) {
 	defer mgr.db.Close()
 	mgr.portLow = portLow
 	mgr.portHigh = portHigh
+	
+	// Create challenge and build properly
+	challenge := &ChallengeMetadata{
+		Id: "test/range", Name: "Range", Namespace: "t", ChallengeType: "custom", Description: "d", Path: "/t/p",
+		ChallengeOptions: ChallengeOptions{Overrides: map[string]ContainerOptions{"": {}}},
+	}
+	mgr.addChallenges([]*ChallengeMetadata{challenge})
+	
+	build := &BuildMetadata{
+		Seed: 1, Format: "flag{%s}", Challenge: "test/range", Schema: "s", InstanceCount: DYNAMIC_INSTANCES,
+	}
+	mgr.openBuild(build)
+	
+	instance := &InstanceMetadata{Build: build.Id}
+	mgr.openInstance(instance)
 
-	portStr, err := mgr.getFreePort()
+	port, err := mgr.reservePort(instance.Id, "test")
 	if err != nil {
-		t.Fatalf("getFreePort failed: %s", err)
-	}
-	if portStr == "" {
-		t.Fatal("expected a non-empty port string")
+		t.Fatalf("reservePort failed: %s", err)
 	}
 
-	var port int
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-		t.Fatalf("returned port is not a number: %q", portStr)
-	}
 	if port < portLow || port > portHigh {
 		t.Errorf("returned port %d is outside range [%d, %d]", port, portLow, portHigh)
 	}
 }
 
-// TestGetFreePortSkipsUsed verifies that getFreePort does not return a port
+// TestReservePortSkipsUsed verifies that reservePort does not return a port
 // that is already recorded in portAssignments.
-func TestGetFreePortSkipsUsed(t *testing.T) {
+func TestReservePortSkipsUsed(t *testing.T) {
 	const portLow = 50000
 	const portHigh = 50002 // only 3 ports: 50000, 50001, 50002
 
@@ -1014,16 +1022,16 @@ func TestGetFreePortSkipsUsed(t *testing.T) {
 
 	mgr := setupPortAssignments(t, portLow, portHigh, assignedPorts)
 	defer mgr.db.Close()
+	
+	// Need a dummy instance ID from setup
+	var instId InstanceId
+	mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId)
 
-	portStr, err := mgr.getFreePort()
+	port, err := mgr.reservePort(instId, "test")
 	if err != nil {
-		t.Fatalf("getFreePort failed: %s", err)
+		t.Fatalf("reservePort failed: %s", err)
 	}
 
-	var port int
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-		t.Fatalf("returned port is not a number: %q", portStr)
-	}
 	if port < portLow || port > portHigh {
 		t.Errorf("returned port %d is outside range [%d, %d]", port, portLow, portHigh)
 	}
@@ -1034,9 +1042,9 @@ func TestGetFreePortSkipsUsed(t *testing.T) {
 	}
 }
 
-// TestGetFreePortAllUsed verifies that getFreePort returns an error when all
+// TestReservePortAllUsed verifies that reservePort returns an error when all
 // ports in the configured range are already assigned.
-func TestGetFreePortAllUsed(t *testing.T) {
+func TestReservePortAllUsed(t *testing.T) {
 	const portLow = 60000
 	const portHigh = 60001 // only 2 ports
 
@@ -1047,8 +1055,11 @@ func TestGetFreePortAllUsed(t *testing.T) {
 
 	mgr := setupPortAssignments(t, portLow, portHigh, assignedPorts)
 	defer mgr.db.Close()
+	
+	var instId InstanceId
+	mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId)
 
-	_, err := mgr.getFreePort()
+	_, err := mgr.reservePort(instId, "test")
 	if err == nil {
 		t.Error("expected an error when all ports are in use, got nil")
 	}
