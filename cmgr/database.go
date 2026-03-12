@@ -189,9 +189,11 @@ func (m *Manager) initDatabase() error {
 		dbPath = "cmgr.db"
 	}
 
-	dsn := dbPath + "?_fk=true&_journal_mode=WAL"
+	// _busy_timeout=50 gives SQLite up to 50ms to retry acquiring a lock before
+	// returning SQLITE_BUSY; avoids instant failures under concurrent access.
+	dsn := dbPath + "?_fk=true&_journal_mode=WAL&_busy_timeout=50"
 	if walEnv, ok := os.LookupEnv(DB_WAL_ENV); ok && (walEnv == "false" || walEnv == "0" || walEnv == "off") {
-		dsn = dbPath + "?_fk=true"
+		dsn = dbPath + "?_fk=true&_busy_timeout=50"
 	}
 
 	db, err := sqlx.Open("sqlite3", dsn)
