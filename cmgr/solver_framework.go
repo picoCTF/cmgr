@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/client"
 )
 
 func (m *Manager) runSolver(instance InstanceId) error {
@@ -42,7 +42,7 @@ func (m *Manager) runSolver(instance InstanceId) error {
 	solveCtx := m.createSolveContext(bMeta)
 
 	imageName := fmt.Sprintf("%s/%s:%d", bMeta.Challenge, "solver", bMeta.Id)
-	opts := types.ImageBuildOptions{Remove: true, Tags: []string{imageName}}
+	opts := client.ImageBuildOptions{Remove: true, Tags: []string{imageName}}
 
 	// Build the base image (will run the solver)
 	resp, err := m.cli.ImageBuild(m.ctx, solveCtx, opts)
@@ -71,7 +71,7 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		return err
 	}
 
-	iro := types.ImageRemoveOptions{Force: false, PruneChildren: true}
+	iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
 	// Defer the image deletion
 	defer m.cli.ImageRemove(m.ctx, imageName, iro)
 
@@ -83,12 +83,12 @@ func (m *Manager) runSolver(instance InstanceId) error {
 	}
 
 	hConfig := container.HostConfig{}
-	hostInfo, err := m.cli.Info(m.ctx)
+	hostInfo, err := m.cli.Info(m.ctx, client.InfoOptions{})
 	if err != nil {
 		return err
 	}
 
-	if hostInfo.OSType == "linux" {
+	if hostInfo.Info.OSType == "linux" {
 		m.log.debug("inserting custom seccomp profile")
 		hConfig.SecurityOpt = []string{"seccomp:" + seccompPolicy}
 	}
@@ -103,35 +103,39 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		},
 	}
 
-	respCC, err := m.cli.ContainerCreate(m.ctx, &cConfig, &hConfig, &nConfig, nil, "")
+	respCC, err := m.cli.ContainerCreate(m.ctx, client.ContainerCreateOptions{
+		Config:           &cConfig,
+		HostConfig:       &hConfig,
+		NetworkingConfig: &nConfig,
+	})
 	if err != nil {
 		m.log.errorf("failed to create solve container: %s", err)
 		return err
 	}
 	cid := respCC.ID
 
-	cro := types.ContainerRemoveOptions{RemoveVolumes: true, Force: true}
+	cro := client.ContainerRemoveOptions{RemoveVolumes: true, Force: true}
 	defer m.cli.ContainerRemove(m.ctx, cid, cro)
 
-	err = m.cli.ContainerStart(m.ctx, cid, types.ContainerStartOptions{})
+	_, err = m.cli.ContainerStart(m.ctx, cid, client.ContainerStartOptions{})
 	if err != nil {
 		m.log.errorf("failed to start solve container: %s", err)
 		return err
 	}
 
-	okChan, eChan := m.cli.ContainerWait(m.ctx, cid, container.WaitConditionNotRunning)
+	waitRes := m.cli.ContainerWait(m.ctx, cid, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	select {
-	case err := <-eChan:
+	case err := <-waitRes.Error:
 		m.log.errorf("failed to wait on solve container: %s", err)
 		return err
-	case _ = <-okChan:
+	case _ = <-waitRes.Result:
 	}
 
 	// Copy out the flag & compare
-	flagFileTar, _, err := m.cli.CopyFromContainer(m.ctx, cid, "/solve/flag")
+	res, err := m.cli.CopyFromContainer(m.ctx, cid, client.CopyFromContainerOptions{SourcePath: "/solve/flag"})
 	if err != nil {
 		m.log.errorf("could not find flag file: %s", err)
-		clo := types.ContainerLogsOptions{
+		clo := client.ContainerLogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
 		}
@@ -151,6 +155,7 @@ func (m *Manager) runSolver(instance InstanceId) error {
 
 		return err
 	}
+	flagFileTar := res.Content
 	defer flagFileTar.Close()
 
 	fTar := tar.NewReader(flagFileTar)
