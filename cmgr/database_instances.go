@@ -1,5 +1,66 @@
 package cmgr
 
+import (
+	"fmt"
+	"math/rand"
+)
+
+func (m *Manager) reservePort(instance InstanceId, name string) (int, error) {
+	if m.portLow == 0 {
+		return 0, fmt.Errorf("port reservation disabled")
+	}
+
+	numPorts := m.portHigh - m.portLow + 1
+
+	for attempt := 0; attempt < 50; attempt++ {
+		// Get currently used ports to find candidates
+		bitset, err := m.usedPortBitset()
+		if err != nil {
+			return 0, err
+		}
+
+		port := rand.Intn(numPorts) + m.portLow
+		var candidate int
+
+		for i := 0; i < numPorts; i++ {
+			p := port - m.portLow
+			if (bitset[p/64] & (1 << (uint(p) % 64))) == 0 {
+				candidate = port
+				break
+			}
+			port = port + 1
+			if port > m.portHigh {
+				port = m.portLow
+			}
+		}
+
+		if candidate == 0 {
+			return 0, fmt.Errorf("All ports between %d and %d are in use", m.portLow, m.portHigh)
+		}
+
+		// Atomic claim: INSERT ... SELECT ... WHERE NOT EXISTS
+		query := `INSERT INTO portAssignments(instance, name, port)
+                  SELECT ?, ?, ?
+                  WHERE NOT EXISTS (SELECT 1 FROM portAssignments WHERE port = ?);`
+		res, err := m.db.Exec(query, instance, name, candidate, candidate)
+		if err != nil {
+			return 0, err
+		}
+
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+
+		if rowsAffected == 1 {
+			return candidate, nil
+		}
+		// Collision! Another instance claimed it first. Loop and try another candidate.
+	}
+
+	return 0, fmt.Errorf("failed to reserve a port after 50 attempts due to high contention")
+}
+
 func (m *Manager) openInstance(meta *InstanceMetadata) error {
 	res, err := m.db.NamedExec("INSERT INTO instances(build, lastsolved) VALUES (:build, :lastsolved);", meta)
 
@@ -21,20 +82,22 @@ func (m *Manager) openInstance(meta *InstanceMetadata) error {
 func (m *Manager) finalizeInstance(meta *InstanceMetadata) error {
 	txn := m.db.MustBegin()
 	var err error
-	for name, port := range meta.Ports {
-		_, err = txn.Exec("INSERT INTO portAssignments(instance, name, port) VALUES (?, ?, ?);",
-			meta.Id,
-			name,
-			port)
+	if m.portLow == 0 {
+		for name, port := range meta.Ports {
+			_, err = txn.Exec("INSERT INTO portAssignments(instance, name, port) VALUES (?, ?, ?);",
+				meta.Id,
+				name,
+				port)
 
-		if err != nil {
-			m.log.errorf("failed to record port assignment: %s", err)
-			cerr := txn.Rollback()
-			if cerr != nil { // If rollback fails, we're in trouble.
-				m.log.error(cerr)
-				err = cerr
+			if err != nil {
+				m.log.errorf("failed to record port assignment: %s", err)
+				cerr := txn.Rollback()
+				if cerr != nil { // If rollback fails, we're in trouble.
+					m.log.error(cerr)
+					err = cerr
+				}
+				return err
 			}
-			return err
 		}
 	}
 
@@ -52,6 +115,17 @@ func (m *Manager) finalizeInstance(meta *InstanceMetadata) error {
 			}
 			return err
 		}
+	}
+
+	_, err = txn.Exec("UPDATE instances SET is_finalized = 1 WHERE id = ?;", meta.Id)
+	if err != nil {
+		m.log.errorf("failed to finalize instance: %s", err)
+		cerr := txn.Rollback()
+		if cerr != nil {
+			m.log.error(cerr)
+			err = cerr
+		}
+		return err
 	}
 
 	err = txn.Commit()
@@ -190,4 +264,73 @@ func (m *Manager) recordSolve(instance *InstanceMetadata) error {
 		}
 	}
 	return err
+}
+
+func (m *Manager) lookupBuildInstances(build BuildId) ([]*InstanceMetadata, error) {
+	var instances []*InstanceMetadata
+	txn, err := m.db.Beginx()
+	if err != nil {
+		return nil, err
+	}
+	defer txn.Rollback() //nolint:errcheck
+
+	err = txn.Select(&instances, "SELECT * FROM instances WHERE build = ?", build)
+
+	// Fetch all ports for these instances
+	ports := []struct {
+		Instance InstanceId `db:"instance"`
+		Name     string     `db:"name"`
+		Port     int        `db:"port"`
+	}{}
+	if err == nil && len(instances) > 0 {
+		err = txn.Select(&ports, "SELECT p.instance, p.name, p.port FROM portAssignments p JOIN instances i ON p.instance = i.id WHERE i.build = ?", build)
+	}
+
+	// Fetch all containers for these instances
+	containers := []struct {
+		Instance InstanceId `db:"instance"`
+		Id       string     `db:"id"`
+	}{}
+	if err == nil && len(instances) > 0 {
+		err = txn.Select(&containers, "SELECT c.instance, c.id FROM containers c JOIN instances i ON c.instance = i.id WHERE i.build = ?", build)
+	}
+
+	if err != nil {
+		m.log.errorf("read of database failed: %s", err)
+		return nil, err
+	}
+
+	if err = txn.Commit(); err != nil {
+		m.log.errorf("failed to commit read-only transaction: %s", err)
+		return nil, err
+	}
+
+	// Map ports to instances
+	portMap := make(map[InstanceId]map[string]int)
+	for _, p := range ports {
+		if _, ok := portMap[p.Instance]; !ok {
+			portMap[p.Instance] = make(map[string]int)
+		}
+		portMap[p.Instance][p.Name] = p.Port
+	}
+
+	// Map containers to instances
+	containerMap := make(map[InstanceId][]string)
+	for _, c := range containers {
+		containerMap[c.Instance] = append(containerMap[c.Instance], c.Id)
+	}
+
+	// Combine
+	for _, inst := range instances {
+		inst.Ports = portMap[inst.Id]
+		if inst.Ports == nil {
+			inst.Ports = make(map[string]int)
+		}
+		inst.Containers = containerMap[inst.Id]
+		if inst.Containers == nil {
+			inst.Containers = []string{}
+		}
+	}
+
+	return instances, nil
 }

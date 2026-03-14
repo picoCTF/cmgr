@@ -3,6 +3,7 @@ package cmgr
 import (
 	"context"
 	"math/rand"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -47,9 +48,10 @@ type Manager struct {
 	authString           string
 	portLow              int
 	portHigh             int
-	lastPruneUnix        int64 // Unix nanoseconds; accessed atomically
+	lastPruneUnix        atomic.Int64 // atomic UnixNano timestamp used as CAS gate for prune interval
 	pruneInterval        time.Duration
 	pruneAge             time.Duration
+	launchSemaphore      chan struct{}
 }
 
 type PortInfo struct {
@@ -146,8 +148,9 @@ type Image struct {
 
 type InstanceId int64
 type InstanceMetadata struct {
-	Id         InstanceId     `json:"id"`
-	Ports      map[string]int `json:"ports,omitempty"`
+	Id          InstanceId     `json:"id"`
+	IsFinalized bool           `json:"-" db:"is_finalized"`
+	Ports       map[string]int `json:"ports,omitempty"`
 	Containers []string       `json:"containers"`
 	LastSolved int64          `json:"last_solved"`
 	CreatedAt  *time.Time     `json:"created_at" db:"created_at"`

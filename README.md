@@ -106,6 +106,10 @@ adjusting the kernel parameter.
   required shared-memory locking is typically unsupported and may cause
   corruption. **Enabled by default.** Set to `false`, `off`, or `0` to disable.
 
+- *CMGR\_CONCURRENT\_LAUNCHES*: the maximum number of concurrent container 
+  launches allowed. Higher values typically do not improve performance and 
+  can increase system load. Allowed values are `1` or `2`. (defaults to `2`)
+
 Additionally, we rely on the Docker SDK's ability to self-configure base off
 environment variables.  The documentation for those variables can be found at
 [https://docs.docker.com/engine/reference/commandline/cli/](https://docs.docker.com/engine/reference/commandline/cli/).

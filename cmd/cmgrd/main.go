@@ -96,11 +96,17 @@ Relevant environment variables:
       does not exist on the host running the Docker daemon, Docker will silently
       ignore this value and instead bind to the loopback address
 
+  CMGR_PRUNE_AGE - the maximum age for on-demand challenge instances; old
+      instances are automatically pruned from the database (defaults to '1h');
+      set to '0' to disable automatic pruning.
   CMGR_DB_WAL - controls whether SQLite WAL journaling mode is enabled;
       on by default for improved throughput under high concurrency;
       creates <db>-wal and <db>-shm sidecar files; do NOT use on network-mounted
       filesystems (NFS, SMB) as this may cause corruption; set to 'false'
       to disable.
+
+  CMGR_CONCURRENT_LAUNCHES - the maximum number of concurrent container 
+      launches allowed (defaults to 2); allowed values are 1 or 2.
 
   Note: The Docker client is configured via Docker's standard environment
       variables.  See https://docs.docker.com/engine/reference/commandline/cli/
