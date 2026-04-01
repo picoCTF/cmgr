@@ -317,7 +317,7 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 
 	// Read the response because errors aren't propagated.
 	messages, err = ioutil.ReadAll(pushResp)
-	resp.Body.Close()
+	pushResp.Close()
 	if err != nil {
 		m.log.errorf("failed to read push response from docker: %s", err)
 		return err
@@ -656,13 +656,22 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		exposedPorts := network.PortSet{}
 		publishedPorts := network.PortMap{}
 		for _, portStr := range image.Ports {
-			port := network.MustParsePort(portStr)
+			port, err := network.ParsePort(portStr)
+			if err != nil {
+				return fmt.Errorf("invalid port %q in image configuration: %w", portStr, err)
+			}
 			hostPort, err := m.getFreePort()
 			if err != nil {
 				return err
 			}
 			exposedPorts[port] = struct{}{}
-			addr, _ := netip.ParseAddr(m.challengeInterface)
+			var addr netip.Addr
+			if m.challengeInterface != "" {
+				addr, err = netip.ParseAddr(m.challengeInterface)
+				if err != nil {
+					return fmt.Errorf("invalid challenge interface %q: %w", m.challengeInterface, err)
+				}
+			}
 			publishedPorts[port] = []network.PortBinding{
 				{HostIP: addr, HostPort: hostPort},
 			}
