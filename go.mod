@@ -10,7 +10,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.34
 	github.com/moby/moby/api v1.54.1-0.20260305140547-83bca512aa7f
 	github.com/moby/moby/client v0.3.1-0.20260305140547-83bca512aa7f
-	github.com/yuin/goldmark v1.7.16
+	github.com/yuin/goldmark v1.8.2
 	gopkg.in/yaml.v2 v2.4.0
 )
 
