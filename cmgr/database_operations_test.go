@@ -988,15 +988,21 @@ func TestReservePortWithRange(t *testing.T) {
 		Id: "test/range", Name: "Range", Namespace: "t", ChallengeType: "custom", Description: "d", Path: "/t/p",
 		ChallengeOptions: ChallengeOptions{Overrides: map[string]ContainerOptions{"": {}}},
 	}
-	mgr.addChallenges([]*ChallengeMetadata{challenge})
-	
+	if errs := mgr.addChallenges([]*ChallengeMetadata{challenge}); len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
 	build := &BuildMetadata{
 		Seed: 1, Format: "flag{%s}", Challenge: "test/range", Schema: "s", InstanceCount: DYNAMIC_INSTANCES,
 	}
-	mgr.openBuild(build)
-	
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("openBuild failed: %v", err)
+	}
+
 	instance := &InstanceMetadata{Build: build.Id}
-	mgr.openInstance(instance)
+	if err := mgr.openInstance(instance); err != nil {
+		t.Fatalf("openInstance failed: %v", err)
+	}
 
 	port, err := mgr.reservePort(instance.Id, "test")
 	if err != nil {
@@ -1025,7 +1031,9 @@ func TestReservePortSkipsUsed(t *testing.T) {
 	
 	// Need a dummy instance ID from setup
 	var instId InstanceId
-	mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId)
+	if err := mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId); err != nil {
+		t.Fatalf("failed to get instance id: %v", err)
+	}
 
 	port, err := mgr.reservePort(instId, "test")
 	if err != nil {
@@ -1057,7 +1065,9 @@ func TestReservePortAllUsed(t *testing.T) {
 	defer mgr.db.Close()
 	
 	var instId InstanceId
-	mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId)
+	if err := mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId); err != nil {
+		t.Fatalf("failed to get instance id: %v", err)
+	}
 
 	_, err := mgr.reservePort(instId, "test")
 	if err == nil {

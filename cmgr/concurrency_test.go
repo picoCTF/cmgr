@@ -17,18 +17,24 @@ func TestConcurrentPortReservation(t *testing.T) {
 		Id: "test/concurrent", Name: "Concurrent", Namespace: "t", ChallengeType: "custom", Description: "d", Path: "/t/p",
 		ChallengeOptions: ChallengeOptions{Overrides: map[string]ContainerOptions{"": {}}},
 	}
-	mgr.addChallenges([]*ChallengeMetadata{challenge})
-	
+	if errs := mgr.addChallenges([]*ChallengeMetadata{challenge}); len(errs) > 0 {
+		t.Fatalf("failed to add challenges: %v", errs)
+	}
+
 	build := &BuildMetadata{
 		Seed: 1, Format: "flag{%s}", Challenge: "test/concurrent", Schema: "s", InstanceCount: DYNAMIC_INSTANCES,
 	}
-	mgr.openBuild(build)
-	
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("failed to open build: %v", err)
+	}
+
 	const numInstances = 50
 	var instances []InstanceId
 	for i := 1; i <= numInstances; i++ {
 		instance := &InstanceMetadata{Build: build.Id}
-		mgr.openInstance(instance)
+		if err := mgr.openInstance(instance); err != nil {
+			t.Fatalf("failed to open instance %d: %v", i, err)
+		}
 		instances = append(instances, instance.Id)
 	}
 

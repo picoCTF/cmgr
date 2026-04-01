@@ -3,6 +3,7 @@ package cmgr
 import (
 	"context"
 	"math/rand"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,7 @@ type Manager struct {
 	dbPath               string
 	challengeDockerfiles map[string][]byte
 	rand                 *rand.Rand
+	randMu               sync.Mutex
 	challengeInterface   string
 	challengeRegistry    string
 	authString           string

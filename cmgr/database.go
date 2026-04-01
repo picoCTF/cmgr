@@ -3,8 +3,10 @@ package cmgr
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"reflect"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -261,6 +263,12 @@ func (m *Manager) initDatabase() error {
 	}
 
 	m.db = db
+
+	// Seed the per-Manager RNG if not already initialized (e.g., when called
+	// directly in tests without going through NewManager).
+	if m.rand == nil {
+		m.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
 
 	return nil
 }

@@ -44,8 +44,8 @@ func setupProfileTestManager(t *testing.T) *Manager {
 // This benchmark measures time up to the point where Docker commands would be sent,
 // excluding actual Docker operations.
 func TestProfileInstanceLaunchWithDBLoad(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping profiling test in short mode")
+	if os.Getenv("CMGR_TEST_PROFILE") == "" {
+		t.Skip("skipping profiling test; set CMGR_TEST_PROFILE=1 to run")
 	}
 
 	// Test scenarios with different database loads
@@ -290,7 +290,7 @@ func profileInstanceLaunch(t *testing.T, instanceCount int) {
 	t.Logf("  - reservePort operations: %8v (%5.1f%%)", step5Duration, 100*step5Duration.Seconds()/totalDuration.Seconds())
 
 	// Output to CSV for easy comparison
-	csvFile := fmt.Sprintf("profile_results_%d.csv", instanceCount)
+	csvFile := fmt.Sprintf("%s/profile_results_%d.csv", t.TempDir(), instanceCount)
 	f, err := os.Create(csvFile)
 	if err != nil {
 		t.Logf("Warning: could not create CSV file: %s", err)

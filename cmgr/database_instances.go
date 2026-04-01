@@ -2,7 +2,6 @@ package cmgr
 
 import (
 	"fmt"
-	"math/rand"
 )
 
 func (m *Manager) reservePort(instance InstanceId, name string) (int, error) {
@@ -19,7 +18,9 @@ func (m *Manager) reservePort(instance InstanceId, name string) (int, error) {
 			return 0, err
 		}
 
-		port := rand.Intn(numPorts) + m.portLow
+		m.randMu.Lock()
+		port := m.rand.Intn(numPorts) + m.portLow
+		m.randMu.Unlock()
 		var candidate int
 
 		for i := 0; i < numPorts; i++ {
