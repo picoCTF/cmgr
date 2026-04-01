@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/containerd/errdefs v1.0.0
-	github.com/docker/cli v29.3.0+incompatible
+	github.com/docker/cli v29.3.1+incompatible
 	github.com/docker/go-units v0.5.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/mattn/go-sqlite3 v1.14.34
