@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/docker/docker/client"
 	"github.com/jmoiron/sqlx"
+	"github.com/moby/moby/client"
 )
 
 const (
