@@ -169,7 +169,16 @@ const schemaQuery string = `
 		cgroupparent TEXT NOT NULL,
 		FOREIGN KEY (challenge) REFERENCES challenges (id)
 			ON UPDATE CASCADE ON DELETE CASCADE
-	);`
+	);
+
+	CREATE INDEX IF NOT EXISTS instanceBuildIndex ON instances(build);
+	CREATE INDEX IF NOT EXISTS portAssignmentInstanceIndex ON portAssignments(instance);
+	CREATE INDEX IF NOT EXISTS portAssignmentPortIndex ON portAssignments(port);
+	CREATE INDEX IF NOT EXISTS containerInstanceIndex ON containers(instance);
+	CREATE INDEX IF NOT EXISTS imageBuildIndex ON images(build);
+	CREATE INDEX IF NOT EXISTS imagePortImageIndex ON imagePorts(image);
+	CREATE INDEX IF NOT EXISTS lookupDataBuildIndex ON lookupData(build);
+`
 
 // Connects to the desired database (creating it if it does not exist) and then
 // ensures that the necessary tables and indexes exist and that the sqlite
@@ -180,9 +189,14 @@ func (m *Manager) initDatabase() error {
 		dbPath = "cmgr.db"
 	}
 
-	dsn := dbPath + "?_fk=true&_journal_mode=WAL"
+	// _busy_timeout=50 gives SQLite up to 50ms to retry acquiring a lock before
+	// returning SQLITE_BUSY; avoids instant failures under concurrent access.
+	// In WAL mode, _synchronous=NORMAL preserves database consistency but can lose
+	// the most recent committed transactions on a crash or power loss (potentially
+	// more than one), in exchange for better performance than FULL.
+	dsn := dbPath + "?_fk=true&_journal_mode=WAL&_busy_timeout=50&_synchronous=NORMAL"
 	if walEnv, ok := os.LookupEnv(DB_WAL_ENV); ok && (walEnv == "false" || walEnv == "0" || walEnv == "off") {
-		dsn = dbPath + "?_fk=true"
+		dsn = dbPath + "?_fk=true&_busy_timeout=50"
 	}
 
 	db, err := sqlx.Open("sqlite3", dsn)
@@ -274,6 +288,36 @@ func (m *Manager) usedPortSet() (map[int]struct{}, error) {
 	return portSet, err
 }
 
+func (m *Manager) usedPortBitset() ([]uint64, error) {
+	if m.portLow == 0 {
+		return nil, nil
+	}
+
+	numPorts := m.portHigh - m.portLow + 1
+	bitset := make([]uint64, (numPorts+63)/64)
+
+	rows, err := m.db.Query("SELECT port FROM portAssignments WHERE port BETWEEN ? AND ?", m.portLow, m.portHigh)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var port int
+		if err := rows.Scan(&port); err != nil {
+			return nil, err
+		}
+		p := port - m.portLow
+		bitset[p/64] |= (1 << (uint(p) % 64))
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return bitset, nil
+}
+
 func (m *Manager) safeToRefresh(new *ChallengeMetadata) bool {
 	old, err := m.lookupChallengeMetadata(new.Id)
 	if err != nil {
@@ -313,20 +357,10 @@ func (m *Manager) dumpState() ([]*ChallengeMetadata, error) {
 				return nil, err
 			}
 
-			bMeta.Instances = []*InstanceMetadata{}
-			err = m.db.Select(&bMeta.Instances, "SELECT id FROM instances WHERE build=?", bMeta.Id)
+			bMeta.Instances, err = m.lookupBuildInstances(bMeta.Id)
 			if err != nil {
 				m.log.errorf("failed to select instances for '%s/%d': %s", challenge.Id, bMeta.Id, err)
 				return nil, err
-			}
-
-			for k, instance := range bMeta.Instances {
-				iMeta, err := m.lookupInstanceMetadata(instance.Id)
-				if err != nil {
-					return nil, err
-				}
-
-				bMeta.Instances[k] = iMeta
 			}
 			meta.Builds[j] = bMeta
 		}

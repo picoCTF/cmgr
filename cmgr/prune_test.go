@@ -1,7 +1,6 @@
 package cmgr
 
 import (
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -184,7 +183,7 @@ func TestCheckPruneSkipsWithinInterval(t *testing.T) {
 	backdateInstance(t, mgr, iid, 2*time.Hour)
 
 	// Record "now" as the last prune time so the interval hasn't elapsed.
-	atomic.StoreInt64(&mgr.lastPruneUnix, time.Now().UnixNano())
+	mgr.lastPruneUnix.Store(time.Now().UnixNano())
 
 	mgr.checkPrune()
 

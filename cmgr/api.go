@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/picoCTF/cmgr/cmgr/dockerfiles"
@@ -517,19 +516,9 @@ func (m *Manager) GetSchemaState(name string) ([]*ChallengeMetadata, error) {
 			return nil, err
 		}
 
-		iids, err := m.getBuildInstances(build.Id)
+		build.Instances, err = m.lookupBuildInstances(build.Id)
 		if err != nil {
 			return nil, err
-		}
-
-		build.Instances = make([]*InstanceMetadata, len(iids))
-		for i, iid := range iids {
-			instance, err := m.lookupInstanceMetadata(iid)
-			if err != nil {
-				return nil, err
-			}
-
-			build.Instances[i] = instance
 		}
 
 		if challenge != nil && challenge.Id != build.Challenge {
@@ -606,7 +595,7 @@ func (m *Manager) checkPrune() {
 	}
 
 	now := time.Now().UnixNano()
-	last := atomic.LoadInt64(&m.lastPruneUnix)
+	last := m.lastPruneUnix.Load()
 
 	// Fast path: interval hasn't elapsed — no lock needed.
 	if time.Duration(now-last) < m.pruneInterval {
@@ -614,7 +603,7 @@ func (m *Manager) checkPrune() {
 	}
 
 	// CAS to claim the prune slot; only one goroutine wins per interval.
-	if !atomic.CompareAndSwapInt64(&m.lastPruneUnix, last, now) {
+	if !m.lastPruneUnix.CompareAndSwap(last, now) {
 		return
 	}
 

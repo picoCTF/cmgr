@@ -3,6 +3,7 @@ package cmgr
 import (
 	"context"
 	"math/rand"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -47,7 +48,7 @@ type Manager struct {
 	authString           string
 	portLow              int
 	portHigh             int
-	lastPruneUnix        int64 // Unix nanoseconds; accessed atomically
+	lastPruneUnix        atomic.Int64 // atomic UnixNano timestamp used as CAS gate for prune interval
 	pruneInterval        time.Duration
 	pruneAge             time.Duration
 }
