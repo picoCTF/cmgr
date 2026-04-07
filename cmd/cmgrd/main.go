@@ -96,6 +96,15 @@ Relevant environment variables:
       does not exist on the host running the Docker daemon, Docker will silently
       ignore this value and instead bind to the loopback address
 
+  CMGR_PRUNE_AGE - the maximum age for on-demand challenge instances; old
+      instances are automatically pruned from the database (defaults to '1h');
+      set to '0' to disable automatic pruning.
+  CMGR_DB_WAL - controls whether SQLite WAL journaling mode is enabled;
+      on by default for improved throughput under high concurrency;
+      creates <db>-wal and <db>-shm sidecar files; do NOT use on network-mounted
+      filesystems (NFS, SMB) as this may cause corruption; set to 'false'
+      to disable.
+
   Note: The Docker client is configured via Docker's standard environment
       variables.  See https://docs.docker.com/engine/reference/commandline/cli/
       for specific details.
@@ -145,6 +154,11 @@ func (s state) listHandler(w http.ResponseWriter, r *http.Request) {
 type BuildChallengeRequest struct {
 	FlagFormat string `json:"flag_format"`
 	Seeds      []int  `json:"seeds"`
+}
+
+type InstanceStartRequest struct {
+	UserId string            `json:"user_id"`
+	Env    map[string]string `json:"env"`
 }
 
 func (s state) challengeHandler(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +264,27 @@ func (s state) buildHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	case "POST":
 		var instance cmgr.InstanceId
-		instance, err = s.mgr.Start(build)
+		envVars := make(map[string]string)
+		if r.Body != nil {
+			var req InstanceStartRequest
+			err = json.NewDecoder(r.Body).Decode(&req)
+			if err != nil && err != io.EOF {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte("invalid request body: " + err.Error()))
+				return
+			}
+			err = nil
+			if req.Env != nil {
+				for k, v := range req.Env {
+					envVars["CMGR_"+k] = v
+				}
+			}
+			if req.UserId != "" {
+				envVars["CMGR_USER_ID"] = req.UserId
+			}
+		}
+
+		instance, err = s.mgr.Start(build, envVars)
 		respCode = http.StatusCreated
 
 		var iMeta *cmgr.InstanceMetadata

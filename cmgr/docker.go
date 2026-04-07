@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/rand"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,14 +22,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/containerd/errdefs"
 	dockeropts "github.com/docker/cli/opts"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/strslice"
-	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
 	"github.com/docker/go-units"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	"github.com/moby/moby/api/types/strslice"
+	"github.com/moby/moby/client"
 )
 
 //go:embed seccomp.json
@@ -44,7 +44,7 @@ func (m *Manager) initDocker() error {
 	m.cli = cli
 	m.ctx = context.Background()
 
-	ping, err := cli.Ping(m.ctx)
+	ping, err := cli.Ping(m.ctx, client.PingOptions{})
 	if err != nil {
 		m.log.errorf("could not connect to docker engine: %s", err)
 		return err
@@ -117,9 +117,11 @@ func (m *Manager) getFreePort() (string, error) {
 
 	numPorts := m.portHigh - m.portLow + 1
 
-	// Get currently used ports...
-	ports, err := m.usedPortSet()
+	// Get currently used ports as a bitset for memory efficiency
+	bitset, err := m.usedPortBitset()
 	if err != nil {
+		// Fallback to ephemeral port if we can't get the bitset,
+		// though this shouldn't happen under normal operation.
 		return "", nil
 	}
 
@@ -128,7 +130,8 @@ func (m *Manager) getFreePort() (string, error) {
 
 	// Sweep through ports looking for a free one...
 	for i := 0; i < numPorts; i++ {
-		if _, used := ports[port]; !used {
+		p := port - m.portLow
+		if (bitset[p/64] & (1 << (uint(p) % 64))) == 0 {
 			return fmt.Sprint(port), nil
 		}
 
@@ -269,7 +272,7 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 	defer buildCtx.Close()
 
 	// Setup build options
-	opts := types.ImageBuildOptions{
+	opts := client.ImageBuildOptions{
 		Remove:     true,
 		Tags:       []string{imageName},
 		Target:     "base",
@@ -308,7 +311,7 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 	}
 
 	// Push the image
-	pushOpts := types.ImagePushOptions{RegistryAuth: m.authString}
+	pushOpts := client.ImagePushOptions{RegistryAuth: m.authString}
 	pushResp, err := m.cli.ImagePush(m.ctx, imageName, pushOpts)
 	if err != nil {
 		m.log.errorf("failed to push base image: %s", err)
@@ -317,7 +320,7 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 
 	// Read the response because errors aren't propagated.
 	messages, err = ioutil.ReadAll(pushResp)
-	resp.Body.Close()
+	pushResp.Close()
 	if err != nil {
 		m.log.errorf("failed to read push response from docker: %s", err)
 		return err
@@ -344,7 +347,7 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	seedStr := fmt.Sprintf("%d", bMeta.Seed)
 
 	baseName := fmt.Sprintf("%s/%s:%x", m.challengeRegistry, challengeToFreezeName(cMeta.Id), cMeta.SourceChecksum)
-	pullOpts := types.ImagePullOptions{RegistryAuth: m.authString}
+	pullOpts := client.ImagePullOptions{RegistryAuth: m.authString}
 	var buildCache []string
 	pullResp, err := m.cli.ImagePull(m.ctx, baseName, pullOpts)
 	if err == nil {
@@ -379,7 +382,7 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 		}
 
 		// Setup build options
-		opts := types.ImageBuildOptions{
+		opts := client.ImageBuildOptions{
 			BuildArgs: map[string]*string{
 				"FLAG_FORMAT": &bMeta.Format,
 				"SEED":        &seedStr,
@@ -438,33 +441,38 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	hConfig := container.HostConfig{}
 	nConfig := network.NetworkingConfig{}
 
-	hostInfo, err := m.cli.Info(m.ctx)
+	hostInfo, err := m.cli.Info(m.ctx, client.InfoOptions{})
 	if err != nil {
 		return err
 	}
 
-	if hostInfo.OSType == "linux" {
+	if hostInfo.Info.OSType == "linux" {
 		m.log.debug("inserting custom seccomp profile")
 		hConfig.SecurityOpt = []string{"seccomp:" + seccompPolicy}
 	}
 
-	respCC, err := m.cli.ContainerCreate(m.ctx, &cConfig, &hConfig, &nConfig, nil, "")
+	respCC, err := m.cli.ContainerCreate(m.ctx, client.ContainerCreateOptions{
+		Config:           &cConfig,
+		HostConfig:       &hConfig,
+		NetworkingConfig: &nConfig,
+	})
 	if err != nil {
 		m.log.errorf("failed to create artifacts container: %s", err)
 		return err
 	}
 
 	cid := respCC.ID
-	crOpts := types.ContainerRemoveOptions{RemoveVolumes: true, RemoveLinks: false, Force: true}
+	crOpts := client.ContainerRemoveOptions{RemoveVolumes: true, Force: true}
 	defer m.cli.ContainerRemove(m.ctx, cid, crOpts)
 
 	m.log.infof("created container %s", cid)
 
-	metaFile, _, err := m.cli.CopyFromContainer(m.ctx, cid, "/challenge")
+	res, err := m.cli.CopyFromContainer(m.ctx, cid, client.CopyFromContainerOptions{SourcePath: "/challenge"})
 	if err != nil {
 		m.log.errorf("could not find '/challenge' in container: %s", err)
 		return err
 	}
+	metaFile := res.Content
 	defer metaFile.Close()
 
 	cTar := tar.NewReader(metaFile)
@@ -587,10 +595,10 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	if err != nil {
 		os.Remove(bMeta.getArtifactsFilename())
 
-		iro := types.ImageRemoveOptions{Force: false, PruneChildren: true}
+		iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
 		for _, image := range bMeta.Images {
 			imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
-			m.cli.ImageRemove(m.ctx, imageName, iro)
+			_, _ = m.cli.ImageRemove(m.ctx, imageName, iro)
 		}
 	}
 
@@ -600,7 +608,7 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 }
 
 func (m *Manager) startNetwork(instance *InstanceMetadata, opts NetworkOptions) error {
-	netSpec := types.NetworkCreate{
+	netSpec := client.NetworkCreateOptions{
 		Driver: "bridge",
 	}
 	netname := instance.getNetworkName()
@@ -613,9 +621,9 @@ func (m *Manager) startNetwork(instance *InstanceMetadata, opts NetworkOptions) 
 
 func (m *Manager) stopNetwork(instance *InstanceMetadata) error {
 	networkName := instance.getNetworkName()
-	err := m.cli.NetworkRemove(m.ctx, networkName)
+	_, err := m.cli.NetworkRemove(m.ctx, networkName, client.NetworkRemoveOptions{})
 	if err != nil {
-		if client.IsErrNotFound(err) {
+		if errdefs.IsNotFound(err) {
 			m.log.warnf("skipped removing network (not found): %s", networkName)
 			err = nil
 		} else {
@@ -631,7 +639,7 @@ func (m *Manager) stopNetwork(instance *InstanceMetadata) error {
 // with the SQLite database.
 var portLock sync.Mutex
 
-func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions) error {
+func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions, envVars map[string]string) error {
 	revPortMap, err := m.getReversePortMap(build.Challenge)
 	if err != nil {
 		return err
@@ -648,17 +656,27 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		if image.Host == "builder" {
 			continue
 		}
-		exposedPorts := nat.PortSet{}
-		publishedPorts := nat.PortMap{}
+		exposedPorts := network.PortSet{}
+		publishedPorts := network.PortMap{}
 		for _, portStr := range image.Ports {
-			port := nat.Port(portStr)
+			port, err := network.ParsePort(portStr)
+			if err != nil {
+				return fmt.Errorf("invalid port %q in image configuration: %w", portStr, err)
+			}
 			hostPort, err := m.getFreePort()
 			if err != nil {
 				return err
 			}
 			exposedPorts[port] = struct{}{}
-			publishedPorts[port] = []nat.PortBinding{
-				{HostIP: m.challengeInterface, HostPort: hostPort},
+			var addr netip.Addr
+			if m.challengeInterface != "" {
+				addr, err = netip.ParseAddr(m.challengeInterface)
+				if err != nil {
+					return fmt.Errorf("invalid challenge interface %q: %w", m.challengeInterface, err)
+				}
+			}
+			publishedPorts[port] = []network.PortBinding{
+				{HostIP: addr, HostPort: hostPort},
 			}
 		}
 
@@ -677,6 +695,17 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			Hostname:     image.Host,
 			ExposedPorts: exposedPorts,
 			Labels:       cLabels,
+		}
+
+		// Note: envVars (including user_id and any caller-supplied variables) are
+		// injected identically into every container in the build. In multi-container
+		// challenges all containers will receive the same set of environment variables.
+		if len(envVars) > 0 {
+			var envList []string
+			for k, v := range envVars {
+				envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+			}
+			cConfig.Env = append(cConfig.Env, envList...)
 		}
 
 		hConfig := container.HostConfig{
@@ -744,12 +773,12 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			}
 		}
 
-		hostInfo, err := m.cli.Info(m.ctx)
+		hostInfo, err := m.cli.Info(m.ctx, client.InfoOptions{})
 		if err != nil {
 			return err
 		}
 
-		if hostInfo.OSType == "linux" {
+		if hostInfo.Info.OSType == "linux" {
 			if hasContainerOpts && cOpts.CapImmutable {
 				hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
 			}
@@ -766,7 +795,11 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			},
 		}
 
-		respCC, err := m.cli.ContainerCreate(m.ctx, &cConfig, &hConfig, &nConfig, nil, "")
+		respCC, err := m.cli.ContainerCreate(m.ctx, client.ContainerCreateOptions{
+			Config:           &cConfig,
+			HostConfig:       &hConfig,
+			NetworkingConfig: &nConfig,
+		})
 		if err != nil {
 			m.log.errorf("failed to create instance container: %s", err)
 			return err
@@ -776,7 +809,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		instance.Containers = append(instance.Containers, cid)
 		m.log.infof("created new container: %s", cid)
 
-		err = m.cli.ContainerStart(m.ctx, cid, types.ContainerStartOptions{})
+		_, err = m.cli.ContainerStart(m.ctx, cid, client.ContainerStartOptions{})
 		if err != nil {
 			m.log.errorf("failed to start container: %s", err)
 			return err
@@ -787,14 +820,20 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		for !done && backoff < time.Second {
 			m.log.debug("Querying docker for port info...")
 
-			cInfo, err := m.cli.ContainerInspect(m.ctx, cid)
+			cInfo, err := m.cli.ContainerInspect(m.ctx, cid, client.ContainerInspectOptions{})
 			if err != nil {
 				m.log.errorf("failed to get container info: %s", err)
 				return err
 			}
-			done = true
+			if cInfo.Container.NetworkSettings == nil {
+				done = false
+				time.Sleep(backoff)
+				backoff = 2 * backoff
+				continue
+			}
 
-			for cPort, hPortInfo := range cInfo.NetworkSettings.Ports {
+			done = true
+			for cPort, hPortInfo := range cInfo.Container.NetworkSettings.Ports {
 				if len(hPortInfo) == 0 {
 					done = false
 					time.Sleep(backoff)
@@ -806,7 +845,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 				if err != nil {
 					return err
 				}
-				instance.Ports[revPortMap[string(cPort)]] = hPort
+				instance.Ports[revPortMap[cPort.String()]] = hPort
 				m.log.debugf("container port %s mapped to %s", cPort, hPortInfo[0].HostPort)
 			}
 		}
@@ -818,10 +857,10 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 func (m *Manager) stopContainers(instance *InstanceMetadata) error {
 	var err error
 	for _, cid := range instance.Containers {
-		opts := types.ContainerRemoveOptions{RemoveVolumes: true, Force: true}
-		err = m.cli.ContainerRemove(m.ctx, cid, opts)
+		crOpts := client.ContainerRemoveOptions{RemoveVolumes: true, Force: true}
+		_, err = m.cli.ContainerRemove(m.ctx, cid, crOpts)
 		if err != nil {
-			if client.IsErrNotFound(err) {
+			if errdefs.IsNotFound(err) {
 				m.log.warnf("skipped removing container (not found): %s", cid)
 				err = nil
 			} else {
@@ -864,13 +903,13 @@ func (m *Manager) destroyImages(build BuildId) error {
 		}
 	}
 
-	iro := types.ImageRemoveOptions{Force: true, PruneChildren: true}
+	iro := client.ImageRemoveOptions{Force: true, PruneChildren: true}
 	for _, image := range bMeta.Images {
 
 		imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
 		_, err := m.cli.ImageRemove(m.ctx, imageName, iro)
 		if err != nil {
-			if client.IsErrNotFound(err) {
+			if errdefs.IsNotFound(err) {
 				m.log.warnf("skipped removing image (not found): %s", imageName)
 			} else {
 				m.log.errorf("failed to remove image: %s", err)

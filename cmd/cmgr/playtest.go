@@ -50,7 +50,7 @@ func playtestChallenge(mgr *cmgr.Manager, args []string) int {
 	bid := builds[0].Id
 	defer mgr.Destroy(bid)
 
-	iid, err := mgr.Start(bid)
+	iid, err := mgr.Start(bid, nil)
 	if err != nil {
 		fmt.Printf("error creating instance: %s\n", err)
 		return RUNTIME_ERROR

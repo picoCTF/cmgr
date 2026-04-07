@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/picoCTF/cmgr/cmgr/dockerfiles"
@@ -42,6 +43,20 @@ func NewManager(logLevel LogLevel) *Manager {
 
 	if err := mgr.initDatabase(); err != nil {
 		return nil
+	}
+
+	mgr.pruneInterval = 1 * time.Minute
+	pruneAgeStr, isSet := os.LookupEnv(PRUNE_AGE_ENV)
+	if !isSet {
+		mgr.pruneAge = 1 * time.Hour
+	} else {
+		age, err := time.ParseDuration(pruneAgeStr)
+		if err != nil {
+			mgr.log.errorf("invalid prune age '%s': %s", pruneAgeStr, err)
+			mgr.pruneAge = 1 * time.Hour
+		} else {
+			mgr.pruneAge = age
+		}
 	}
 
 	return mgr
@@ -204,8 +219,11 @@ func (m *Manager) Build(challenge ChallengeId, seeds []int, flagFormat string) (
 }
 
 // Creates a running "instance" of the given build and returns its identifier
-// on success otherwise an error.
-func (m *Manager) Start(build BuildId) (InstanceId, error) {
+// on success otherwise an error. The optional envVars map provides extra
+// environment variables to inject into the instance's containers. Keys in
+// envVars should already include the "CMGR_" prefix. Pass nil if no
+// additional environment variables are needed.
+func (m *Manager) Start(build BuildId, envVars map[string]string) (InstanceId, error) {
 	// Get build metadata
 	bMeta, err := m.lookupBuildMetadata(build)
 	if err != nil {
@@ -216,10 +234,10 @@ func (m *Manager) Start(build BuildId) (InstanceId, error) {
 		return 0, errors.New("locked build: change the schema definition to start more instances")
 	}
 
-	return m.newInstance(bMeta)
+	return m.newInstance(bMeta, envVars)
 }
 
-func (m *Manager) newInstance(build *BuildMetadata) (InstanceId, error) {
+func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (InstanceId, error) {
 	iMeta := &InstanceMetadata{
 		Build:      build.Id,
 		Ports:      make(map[string]int),
@@ -229,6 +247,8 @@ func (m *Manager) newInstance(build *BuildMetadata) (InstanceId, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	m.checkPrune()
 
 	cMeta, err := m.GetChallengeMetadata(build.Challenge)
 	if err != nil {
@@ -240,7 +260,7 @@ func (m *Manager) newInstance(build *BuildMetadata) (InstanceId, error) {
 		return 0, err
 	}
 
-	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides)
+	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides, envVars)
 	if err != nil {
 		// It is possible we are in a partially deployed state.  Make sure
 		// we are torn down, but ignore the returned error.
@@ -401,14 +421,14 @@ func (m *Manager) convergeSchema(schema *Schema) []error {
 			continue
 		}
 
-		for _, build := range builds {
-			target := schema.Challenges[build.Challenge].InstanceCount
+		for _, buildMeta := range builds {
+			target := schema.Challenges[buildMeta.Challenge].InstanceCount
 			if target == DYNAMIC_INSTANCES || target == LOCKED {
 				continue
 			}
 
-			instances, err := m.getBuildInstances(build.Id)
-			m.log.debugf("converging %s/%d: %d found, need %d", build.Challenge, build.Id, len(instances), target)
+			instances, err := m.getBuildInstances(buildMeta.Id)
+			m.log.debugf("converging %s/%d: %d found, need %d", buildMeta.Challenge, buildMeta.Id, len(instances), target)
 			for i := target; i < len(instances); i++ {
 				iMeta, err := m.lookupInstanceMetadata(instances[i])
 				if err != nil {
@@ -423,21 +443,20 @@ func (m *Manager) convergeSchema(schema *Schema) []error {
 			}
 
 			for i := len(instances); i < target; i++ {
-				if len(build.Images) == 0 {
+				if len(buildMeta.Images) == 0 {
 					// Lazy lookup for case where we resized
-					build, err = m.lookupBuildMetadata(build.Id)
+					buildMeta, err = m.lookupBuildMetadata(buildMeta.Id)
 					if err != nil {
 						errs = append(errs, err)
 						break
 					}
 				}
-				_, err = m.newInstance(build)
+				_, err = m.newInstance(buildMeta, nil)
 				if err != nil {
 					errs = append(errs, err)
 					break
 				}
 			}
-
 		}
 	}
 
@@ -497,19 +516,9 @@ func (m *Manager) GetSchemaState(name string) ([]*ChallengeMetadata, error) {
 			return nil, err
 		}
 
-		iids, err := m.getBuildInstances(build.Id)
+		build.Instances, err = m.lookupBuildInstances(build.Id)
 		if err != nil {
 			return nil, err
-		}
-
-		build.Instances = make([]*InstanceMetadata, len(iids))
-		for i, iid := range iids {
-			instance, err := m.lookupInstanceMetadata(iid)
-			if err != nil {
-				return nil, err
-			}
-
-			build.Instances[i] = instance
 		}
 
 		if challenge != nil && challenge.Id != build.Challenge {
@@ -578,4 +587,58 @@ func (m *Manager) DumpState(challenges []ChallengeId) ([]*ChallengeMetadata, err
 func (m *Manager) GetDockerfile(challengeType string) []byte {
 	dockerfile, _ := dockerfiles.Get(challengeType)
 	return dockerfile
+}
+
+func (m *Manager) checkPrune() {
+	if m.pruneAge <= 0 {
+		return
+	}
+
+	now := time.Now().UnixNano()
+	last := m.lastPruneUnix.Load()
+
+	// Fast path: interval hasn't elapsed — no lock needed.
+	if time.Duration(now-last) < m.pruneInterval {
+		return
+	}
+
+	// CAS to claim the prune slot; only one goroutine wins per interval.
+	if !m.lastPruneUnix.CompareAndSwap(last, now) {
+		return
+	}
+
+	go func() {
+		if err := m.Prune(); err != nil {
+			m.log.errorf("failed to prune old instances: %s", err)
+		}
+	}()
+}
+
+func (m *Manager) Prune() error {
+	m.log.debugf("pruning on-demand instances older than %s", m.pruneAge)
+
+	// Manual builds start with the manual schema prefix. We want to find
+	// instances associated with these builds that are older than the prune age.
+	// We also prune those with NULL created_at (legacy entries).
+	query := `
+		DELETE FROM instances
+		WHERE id IN (
+			SELECT i.id
+			FROM instances AS i
+			JOIN builds AS b ON i.build = b.id
+			WHERE b.schema LIKE ?
+			AND (i.created_at IS NULL OR i.created_at < datetime('now', ?))
+		);`
+
+	res, err := m.db.Exec(query, manualSchemaPrefix+"%", fmt.Sprintf("-%d seconds", int(m.pruneAge.Seconds())))
+	if err != nil {
+		return err
+	}
+
+	count, _ := res.RowsAffected()
+	if count > 0 {
+		m.log.infof("pruned %d old instances", count)
+	}
+
+	return nil
 }

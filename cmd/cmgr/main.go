@@ -246,6 +246,9 @@ Relevant environment variables:
   CMGR_REGISTRY_TOKEN - the token/password to use to authenticate with the
       registry
 
+  CMGR_PRUNE_AGE - the maximum age for on-demand challenge instances; old
+      instances are automatically pruned from the database (defaults to '1h')
+
   Note: The Docker client is configured via Docker's standard environment
       variables.  See https://docs.docker.com/engine/reference/commandline/cli/
       for specific details.
