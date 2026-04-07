@@ -153,10 +153,10 @@ type InstanceMetadata struct {
 	Id          InstanceId     `json:"id"`
 	IsFinalized bool           `json:"-" db:"is_finalized"`
 	Ports       map[string]int `json:"ports,omitempty"`
-	Containers []string       `json:"containers"`
-	LastSolved int64          `json:"last_solved"`
-	CreatedAt  *time.Time     `json:"created_at" db:"created_at"`
-	Build      BuildId        `json:"build_id"`
+	Containers  []string       `json:"containers"`
+	LastSolved  int64          `json:"last_solved"`
+	CreatedAt   *time.Time     `json:"created_at" db:"created_at"`
+	Build       BuildId        `json:"build_id"`
 }
 
 type Schema struct {

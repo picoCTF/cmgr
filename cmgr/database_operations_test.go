@@ -982,7 +982,7 @@ func TestReservePortWithRange(t *testing.T) {
 	defer mgr.db.Close()
 	mgr.portLow = portLow
 	mgr.portHigh = portHigh
-	
+
 	// Create challenge and build properly
 	challenge := &ChallengeMetadata{
 		Id: "test/range", Name: "Range", Namespace: "t", ChallengeType: "custom", Description: "d", Path: "/t/p",
@@ -1028,7 +1028,7 @@ func TestReservePortSkipsUsed(t *testing.T) {
 
 	mgr := setupPortAssignments(t, portLow, portHigh, assignedPorts)
 	defer mgr.db.Close()
-	
+
 	// Need a dummy instance ID from setup
 	var instId InstanceId
 	if err := mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId); err != nil {
@@ -1063,7 +1063,7 @@ func TestReservePortAllUsed(t *testing.T) {
 
 	mgr := setupPortAssignments(t, portLow, portHigh, assignedPorts)
 	defer mgr.db.Close()
-	
+
 	var instId InstanceId
 	if err := mgr.db.QueryRow("SELECT id FROM instances LIMIT 1").Scan(&instId); err != nil {
 		t.Fatalf("failed to get instance id: %v", err)

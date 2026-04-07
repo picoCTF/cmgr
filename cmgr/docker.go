@@ -643,7 +643,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			} else {
 				hostPort = strconv.Itoa(instance.Ports[revPortMap[portStr]])
 			}
-			
+
 			exposedPorts[port] = struct{}{}
 			var addr netip.Addr
 			if m.challengeInterface != "" {
