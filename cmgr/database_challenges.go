@@ -624,6 +624,11 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 					// instances also restart them with the new image. On-demand (dynamic)
 					// instances are started per-user with injected env vars, so they are
 					// only torn down here and not restarted.
+					revPortMap, err := m.getReversePortMap(build.Challenge)
+					if err != nil {
+						errs = append(errs, err)
+						continue
+					}
 					instances, err := m.getBuildInstances(build.Id)
 					if err != nil {
 						errs = append(errs, err)
@@ -641,7 +646,7 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 							err = m.startNetwork(instance, cMeta.ChallengeOptions.NetworkOptions)
 						}
 						if err == nil && build.InstanceCount != DYNAMIC_INSTANCES {
-							err = m.startContainers(build, instance, cMeta.ChallengeOptions.Overrides, nil)
+							err = m.startContainers(build, instance, cMeta.ChallengeOptions.Overrides, nil, revPortMap)
 						}
 						if err != nil {
 							errs = append(errs, err)

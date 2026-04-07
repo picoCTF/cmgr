@@ -615,14 +615,9 @@ func (m *Manager) stopNetwork(instance *InstanceMetadata) error {
 	return err
 }
 
-func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions, envVars map[string]string) error {
+func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions, envVars map[string]string, revPortMap map[string]string) error {
 	m.launchSemaphore <- struct{}{}
 	defer func() { <-m.launchSemaphore }()
-
-	revPortMap, err := m.getReversePortMap(build.Challenge)
-	if err != nil {
-		return err
-	}
 
 	// Call create in docker
 	netname := instance.getNetworkName()

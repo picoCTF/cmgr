@@ -256,13 +256,13 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 		return 0, err
 	}
 
-	if m.portLow != 0 {
-		revPortMap, err := m.getReversePortMap(build.Challenge)
-		if err != nil {
-			m.removeInstanceMetadata(iMeta.Id)
-			return 0, err
-		}
+	revPortMap, err := m.getReversePortMap(build.Challenge)
+	if err != nil {
+		m.removeInstanceMetadata(iMeta.Id)
+		return 0, err
+	}
 
+	if m.portLow != 0 {
 		for _, image := range build.Images {
 			if image.Host == "builder" {
 				continue
@@ -285,7 +285,7 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 		return 0, err
 	}
 
-	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides, envVars)
+	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides, envVars, revPortMap)
 	if err != nil {
 		// It is possible we are in a partially deployed state.  Make sure
 		// we are torn down, but ignore the returned error.
