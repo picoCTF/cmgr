@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"strings"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -195,11 +194,19 @@ func (m *Manager) initDatabase() error {
 		m.log.errorf("could not set database schema: %s", err)
 		return err
 	}
-	// Best-effort migration for older DBs: add capimmutable if missing.
-	// If the column already exists, sqlite returns a duplicate-column error that can be ignored.
-	_, err = db.Exec("ALTER TABLE containerOptions ADD COLUMN capimmutable INTEGER NOT NULL DEFAULT 0;")
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name: capimmutable") {
-		m.log.warnf("could not migrate containerOptions.capimmutable column: %s", err)
+	// Migrate older DBs: add capimmutable if it is not already present.
+	var capimmutableColumnCount int
+	err = db.QueryRow("SELECT COUNT(1) FROM pragma_table_info('containerOptions') WHERE name='capimmutable';").Scan(&capimmutableColumnCount)
+	if err != nil {
+		m.log.errorf("could not inspect containerOptions schema: %s", err)
+		return err
+	}
+	if capimmutableColumnCount == 0 {
+		_, err = db.Exec("ALTER TABLE containerOptions ADD COLUMN capimmutable INTEGER NOT NULL DEFAULT 0;")
+		if err != nil {
+			m.log.errorf("could not migrate containerOptions.capimmutable column: %s", err)
+			return err
+		}
 	}
 
 	var fkeysEnforced bool
