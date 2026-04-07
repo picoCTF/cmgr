@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math/rand"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -43,9 +42,9 @@ func (m *Manager) initDocker() error {
 	m.cli = cli
 	m.ctx = context.Background()
 
-	var ping types.Ping
+	var ping client.PingResult
 	for attempt := 1; attempt <= 3; attempt++ {
-		ping, err = cli.Ping(m.ctx)
+		ping, err = cli.Ping(m.ctx, client.PingOptions{})
 		if err == nil {
 			break
 		}
@@ -634,7 +633,10 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		exposedPorts := network.PortSet{}
 		publishedPorts := network.PortMap{}
 		for _, portStr := range image.Ports {
-			port := nat.Port(portStr)
+			port, err := network.ParsePort(portStr)
+			if err != nil {
+				return fmt.Errorf("invalid port %q in image configuration: %w", portStr, err)
+			}
 			var hostPort string
 			if m.portLow == 0 {
 				hostPort = ""
