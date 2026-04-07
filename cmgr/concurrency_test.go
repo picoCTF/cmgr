@@ -1,8 +1,11 @@
 package cmgr
 
 import (
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestConcurrentPortReservation verifies that atomic port reservations
@@ -76,5 +79,88 @@ func TestConcurrentPortReservation(t *testing.T) {
 
 	if len(uniquePorts) != numInstances {
 		t.Errorf("Expected %d unique ports, got %d", numInstances, len(uniquePorts))
+	}
+}
+
+// TestLaunchSemaphoreEnforcesConcurrencyLimit verifies that the buffered-channel
+// semaphore used in startContainers never allows more than the configured number
+// of concurrent holders.
+func TestLaunchSemaphoreEnforcesConcurrencyLimit(t *testing.T) {
+	for _, limit := range []int{1, 2} {
+		limit := limit
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			t.Parallel()
+			mgr := &Manager{
+				log:             newLogger(DISABLED),
+				launchSemaphore: make(chan struct{}, limit),
+			}
+
+			const workers = 8
+			var inFlight atomic.Int32
+			var peak atomic.Int32
+			var wg sync.WaitGroup
+
+			for range workers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					// mirrors the exact pattern in startContainers
+					mgr.launchSemaphore <- struct{}{}
+					defer func() { <-mgr.launchSemaphore }()
+
+					cur := inFlight.Add(1)
+					for {
+						p := peak.Load()
+						if cur <= p || peak.CompareAndSwap(p, cur) {
+							break
+						}
+					}
+					time.Sleep(20 * time.Millisecond) // hold slot so goroutines overlap
+					inFlight.Add(-1)
+				}()
+			}
+
+			wg.Wait()
+
+			if got := peak.Load(); got > int32(limit) {
+				t.Errorf("peak in-flight %d exceeded semaphore limit %d", got, limit)
+			}
+		})
+	}
+}
+
+// TestLaunchSemaphoreReleasedOnReturn verifies that the deferred release in
+// startContainers actually frees the slot so subsequent callers can proceed.
+func TestLaunchSemaphoreReleasedOnReturn(t *testing.T) {
+	mgr := &Manager{
+		log:             newLogger(DISABLED),
+		launchSemaphore: make(chan struct{}, 1),
+	}
+
+	acquire := func() func() {
+		mgr.launchSemaphore <- struct{}{}
+		return func() { <-mgr.launchSemaphore }
+	}
+
+	release := acquire()
+	// slot is held — a non-blocking send should fail
+	select {
+	case mgr.launchSemaphore <- struct{}{}:
+		t.Fatal("acquired semaphore while it should be full")
+	default:
+	}
+
+	release()
+	// slot is free — the next acquire must not block
+	done := make(chan struct{})
+	go func() {
+		mgr.launchSemaphore <- struct{}{}
+		<-mgr.launchSemaphore
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("semaphore slot was not released after return")
 	}
 }

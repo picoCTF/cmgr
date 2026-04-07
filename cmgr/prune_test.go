@@ -194,3 +194,80 @@ func TestCheckPruneSkipsWithinInterval(t *testing.T) {
 		t.Errorf("prune should not have fired (interval not elapsed), but instance was removed: %s", err)
 	}
 }
+
+// TestPruneGarbageCollectsStaleUnfinalizedInstances verifies that unfinalized
+// instances (simulating a crashed launch) older than 5 minutes are deleted.
+func TestPruneGarbageCollectsStaleUnfinalizedInstances(t *testing.T) {
+	mgr, bid, _ := setupPruneTestFixture(t, "schema-gc-test")
+	mgr.pruneAge = 1 * time.Hour
+
+	instance := &InstanceMetadata{Build: bid}
+	if err := mgr.openInstance(instance); err != nil {
+		t.Fatalf("openInstance failed: %s", err)
+	}
+	// intentionally not finalized — simulates a crashed launch
+
+	backdateInstance(t, mgr, instance.Id, 6*time.Minute)
+
+	if err := mgr.Prune(); err != nil {
+		t.Fatalf("Prune() returned error: %s", err)
+	}
+
+	if _, err := mgr.lookupInstanceMetadata(instance.Id); err == nil {
+		t.Error("expected stale unfinalized instance to be GC'd, but it still exists")
+	}
+}
+
+// TestPruneRetainsRecentUnfinalizedInstances verifies that an unfinalized
+// instance newer than 5 minutes is left alone (launch may still be in progress).
+func TestPruneRetainsRecentUnfinalizedInstances(t *testing.T) {
+	mgr, bid, _ := setupPruneTestFixture(t, "schema-gc-test")
+	mgr.pruneAge = 1 * time.Hour
+
+	instance := &InstanceMetadata{Build: bid}
+	if err := mgr.openInstance(instance); err != nil {
+		t.Fatalf("openInstance failed: %s", err)
+	}
+	// not finalized, but just created — within the 5-minute window
+
+	if err := mgr.Prune(); err != nil {
+		t.Fatalf("Prune() returned error: %s", err)
+	}
+
+	if _, err := mgr.lookupInstanceMetadata(instance.Id); err != nil {
+		t.Errorf("expected recent unfinalized instance to be retained, got error: %s", err)
+	}
+}
+
+// TestPruneGCReleasesReservedPorts verifies that ports reserved before a
+// crashed launch are freed when the unfinalized instance is GC'd.
+func TestPruneGCReleasesReservedPorts(t *testing.T) {
+	mgr, bid, _ := setupPruneTestFixture(t, "schema-gc-ports-test")
+	mgr.pruneAge = 1 * time.Hour
+	mgr.portLow = 10000
+	mgr.portHigh = 20000
+
+	instance := &InstanceMetadata{Build: bid}
+	if err := mgr.openInstance(instance); err != nil {
+		t.Fatalf("openInstance failed: %s", err)
+	}
+
+	port, err := mgr.reservePort(instance.Id, "http")
+	if err != nil {
+		t.Fatalf("reservePort failed: %s", err)
+	}
+
+	backdateInstance(t, mgr, instance.Id, 6*time.Minute)
+
+	if err := mgr.Prune(); err != nil {
+		t.Fatalf("Prune() returned error: %s", err)
+	}
+
+	var count int
+	if err := mgr.db.QueryRow("SELECT COUNT(*) FROM portAssignments WHERE port = ?", port).Scan(&count); err != nil {
+		t.Fatalf("portAssignments query failed: %s", err)
+	}
+	if count != 0 {
+		t.Errorf("expected port %d to be released after GC, but it still exists in portAssignments", port)
+	}
+}
