@@ -252,12 +252,14 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 
 	cMeta, err := m.GetChallengeMetadata(build.Challenge)
 	if err != nil {
+		m.removeInstanceMetadata(iMeta.Id)
 		return 0, err
 	}
 
 	if m.portLow != 0 {
 		revPortMap, err := m.getReversePortMap(build.Challenge)
 		if err != nil {
+			m.removeInstanceMetadata(iMeta.Id)
 			return 0, err
 		}
 
@@ -279,6 +281,7 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 
 	err = m.startNetwork(iMeta, cMeta.ChallengeOptions.NetworkOptions)
 	if err != nil {
+		m.stopInstance(iMeta)
 		return 0, err
 	}
 
