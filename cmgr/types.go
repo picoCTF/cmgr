@@ -76,6 +76,7 @@ type ContainerOptions struct {
 	NoNewPrivileges bool     `json:"nonewprivileges,omitempty" yaml:"nonewprivileges"`
 	DiskQuota       string   `json:"diskquota,omitempty"       yaml:"diskquota"`
 	CgroupParent    string   `json:"cgroupparent,omitempty"    yaml:"cgroupparent"`
+	CapImmutable    bool     `json:"capimmutable,omitempty"    yaml:"cap_immutable"`
 }
 
 type ChallengeOptions struct {

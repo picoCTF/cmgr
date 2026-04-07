@@ -147,6 +147,16 @@ containers.
 
   Specify a cgroup name, as shown in the example below. Unset by default.
 
+- The `cap_immutable` option adds the `LINUX_IMMUTABLE` Linux capability to the container. This is
+  equivalent to passing the
+  [`--cap-add=LINUX_IMMUTABLE`](https://docs.docker.com/engine/reference/run/#runtime-privilege-and-linux-capabilities)
+  option to `docker run`.
+
+  This capability allows processes inside the container to use operations such as `chattr +i`.
+  Because it grants additional privilege beyond Docker's default capability set, only enable it for
+  challenges that explicitly require immutable file attribute management. Specify a boolean value,
+  as shown in the example below. Defaults to `false`.
+
 ```yaml
 # sample challenge options:
 init: true
@@ -165,6 +175,7 @@ droppedcaps:
 nonewprivileges: true
 diskquota: 256m
 cgroupparent: customcgroup.slice
+cap_immutable: true
 
 # only relevant for multi-container challenges:
 overrides:

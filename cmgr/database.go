@@ -167,6 +167,7 @@ const schemaQuery string = `
 		nonewprivileges INTEGER NOT NULL CHECK(nonewprivileges == 0 OR nonewprivileges == 1),
 		diskquota TEXT NOT NULL,
 		cgroupparent TEXT NOT NULL,
+		capimmutable INTEGER NOT NULL CHECK(capimmutable == 0 OR capimmutable == 1) DEFAULT 0,
 		FOREIGN KEY (challenge) REFERENCES challenges (id)
 			ON UPDATE CASCADE ON DELETE CASCADE
 	);
@@ -212,6 +213,20 @@ func (m *Manager) initDatabase() error {
 	if err != nil {
 		m.log.errorf("could not set database schema: %s", err)
 		return err
+	}
+	// Migrate older DBs: add capimmutable if it is not already present.
+	var capimmutableColumnCount int
+	err = db.QueryRow("SELECT COUNT(1) FROM pragma_table_info('containerOptions') WHERE name='capimmutable';").Scan(&capimmutableColumnCount)
+	if err != nil {
+		m.log.errorf("could not inspect containerOptions schema: %s", err)
+		return err
+	}
+	if capimmutableColumnCount == 0 {
+		_, err = db.Exec("ALTER TABLE containerOptions ADD COLUMN capimmutable INTEGER NOT NULL DEFAULT 0;")
+		if err != nil {
+			m.log.errorf("could not migrate containerOptions.capimmutable column: %s", err)
+			return err
+		}
 	}
 
 	// Handle migration for existing databases: add created_at column if not

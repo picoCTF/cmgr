@@ -779,6 +779,9 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		}
 
 		if hostInfo.Info.OSType == "linux" {
+			if hasContainerOpts && cOpts.CapImmutable {
+				hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
+			}
 			m.log.debug("inserting custom seccomp profile")
 			hConfig.SecurityOpt = append(hConfig.SecurityOpt, "seccomp:"+seccompPolicy)
 		}
