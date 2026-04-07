@@ -138,9 +138,7 @@ func profileInstanceLaunch(t *testing.T, instanceCount int) {
 			t.Fatalf("openInstance %d failed: %s", i, err)
 		}
 
-		// Set created_at timestamp - this is version-specific
-		// See profile_test_timestamps.go for the implementation
-		setInstanceTimestamp(t, mgr, instance.Id, now, i)
+		setTimestamp(t, mgr, instance.Id, now, i)
 
 		if err := mgr.finalizeInstance(instance); err != nil {
 			t.Fatalf("finalizeInstance %d failed: %s", i, err)
@@ -420,8 +418,7 @@ func setupProfileBenchmarkData(b *testing.B, mgr *Manager, instanceCount int) *B
 			b.Fatalf("openInstance failed: %s", err)
 		}
 
-		// Set timestamp using version-specific helper
-		setBenchmarkTimestamp(b, mgr, instance.Id, now, i)
+		setTimestamp(b, mgr, instance.Id, now, i)
 
 		if err := mgr.finalizeInstance(instance); err != nil {
 			b.Fatalf("finalizeInstance failed: %s", err)

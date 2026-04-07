@@ -15,13 +15,3 @@ func setTimestamp(tb testing.TB, mgr *Manager, id InstanceId, base time.Time, of
 		tb.Fatalf("failed to set timestamp for instance %d: %s", id, err)
 	}
 }
-
-// setInstanceTimestamp sets the created_at timestamp for an instance during a test.
-func setInstanceTimestamp(t *testing.T, mgr *Manager, id InstanceId, base time.Time, offset int) {
-	setTimestamp(t, mgr, id, base, offset)
-}
-
-// setBenchmarkTimestamp sets the created_at timestamp for an instance during a benchmark.
-func setBenchmarkTimestamp(b *testing.B, mgr *Manager, id InstanceId, base time.Time, offset int) {
-	setTimestamp(b, mgr, id, base, offset)
-}
