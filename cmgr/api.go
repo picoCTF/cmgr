@@ -252,15 +252,40 @@ func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (
 
 	cMeta, err := m.GetChallengeMetadata(build.Challenge)
 	if err != nil {
+		m.removeInstanceMetadata(iMeta.Id)
 		return 0, err
+	}
+
+	revPortMap, err := m.getReversePortMap(build.Challenge)
+	if err != nil {
+		m.removeInstanceMetadata(iMeta.Id)
+		return 0, err
+	}
+
+	if m.portLow != 0 {
+		for _, image := range build.Images {
+			if image.Host == "builder" {
+				continue
+			}
+			for _, portStr := range image.Ports {
+				portName := revPortMap[portStr]
+				hostPort, err := m.reservePort(iMeta.Id, portName)
+				if err != nil {
+					m.stopInstance(iMeta)
+					return 0, err
+				}
+				iMeta.Ports[portName] = hostPort
+			}
+		}
 	}
 
 	err = m.startNetwork(iMeta, cMeta.ChallengeOptions.NetworkOptions)
 	if err != nil {
+		m.stopInstance(iMeta)
 		return 0, err
 	}
 
-	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides, envVars)
+	err = m.startContainers(build, iMeta, cMeta.ChallengeOptions.Overrides, envVars, revPortMap)
 	if err != nil {
 		// It is possible we are in a partially deployed state.  Make sure
 		// we are torn down, but ignore the returned error.
@@ -638,6 +663,18 @@ func (m *Manager) Prune() error {
 	count, _ := res.RowsAffected()
 	if count > 0 {
 		m.log.infof("pruned %d old instances", count)
+	}
+
+	// Clean up unfinalized instances (crashed launches) older than 5 minutes
+	gcQuery := `DELETE FROM instances WHERE is_finalized = 0 AND created_at < datetime('now', '-5 minutes');`
+	gcRes, err := m.db.Exec(gcQuery)
+	if err == nil {
+		gcCount, _ := gcRes.RowsAffected()
+		if gcCount > 0 {
+			m.log.infof("garbage collected %d unfinalized instances", gcCount)
+		}
+	} else {
+		m.log.errorf("failed to garbage collect unfinalized instances: %s", err)
 	}
 
 	return nil

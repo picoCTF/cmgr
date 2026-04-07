@@ -3,8 +3,10 @@ package cmgr
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"reflect"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -126,6 +128,7 @@ const schemaQuery string = `
 		lastsolved INTEGER,
 		build INTEGER NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_finalized INTEGER NOT NULL DEFAULT 0 CHECK(is_finalized IN (0,1)),
 		FOREIGN KEY (build) REFERENCES builds (id)
 			ON UPDATE RESTRICT ON DELETE RESTRICT
 	);
@@ -229,8 +232,6 @@ func (m *Manager) initDatabase() error {
 		}
 	}
 
-	// Handle migration for existing databases: add created_at column if not
-	// already present. Check via PRAGMA to avoid relying on error-string matching.
 	var colCount int
 	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = 'created_at';").Scan(&colCount)
 	if err != nil {
@@ -251,6 +252,20 @@ func (m *Manager) initDatabase() error {
 		return err
 	}
 
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = 'is_finalized';").Scan(&colCount)
+	if err != nil {
+		m.log.errorf("could not check instances table schema for is_finalized: %s", err)
+		return err
+	}
+	if colCount == 0 {
+		// Default to 1 for existing instances, as they were successfully launched
+		_, err = db.Exec("ALTER TABLE instances ADD COLUMN is_finalized INTEGER NOT NULL DEFAULT 1 CHECK(is_finalized IN (0,1));")
+		if err != nil {
+			m.log.errorf("could not migrate instances table for is_finalized: %s", err)
+			return err
+		}
+	}
+
 	var fkeysEnforced bool
 	err = db.QueryRow("PRAGMA foreign_keys;").Scan(&fkeysEnforced)
 	if err != nil {
@@ -264,6 +279,12 @@ func (m *Manager) initDatabase() error {
 	}
 
 	m.db = db
+
+	// Seed the per-Manager RNG if not already initialized (e.g., when called
+	// directly in tests without going through NewManager).
+	if m.rand == nil {
+		m.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
 
 	return nil
 }
