@@ -11,13 +11,12 @@ func (m *Manager) reservePort(instance InstanceId, name string) (int, error) {
 
 	numPorts := m.portHigh - m.portLow + 1
 
-	for attempt := 0; attempt < 50; attempt++ {
-		// Get currently used ports to find candidates
-		bitset, err := m.usedPortBitset()
-		if err != nil {
-			return 0, err
-		}
+	bitset, err := m.usedPortBitset()
+	if err != nil {
+		return 0, err
+	}
 
+	for attempt := 0; attempt < 50; attempt++ {
 		m.randMu.Lock()
 		port := m.rand.Intn(numPorts) + m.portLow
 		m.randMu.Unlock()
@@ -56,7 +55,9 @@ func (m *Manager) reservePort(instance InstanceId, name string) (int, error) {
 		if rowsAffected == 1 {
 			return candidate, nil
 		}
-		// Collision! Another instance claimed it first. Loop and try another candidate.
+		// Collision — mark this port as used in the local bitset and retry
+		p := candidate - m.portLow
+		bitset[p/64] |= 1 << (uint(p) % 64)
 	}
 
 	return 0, fmt.Errorf("failed to reserve a port after 50 attempts due to high contention")
