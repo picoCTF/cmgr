@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -195,8 +196,11 @@ func (m *Manager) initDatabase() error {
 		return err
 	}
 	// Best-effort migration for older DBs: add capimmutable if missing.
-	// If the column already exists, this will error and we ignore it.
-	_, _ = db.Exec("ALTER TABLE containerOptions ADD COLUMN capimmutable INTEGER NOT NULL DEFAULT 0;")
+	// If the column already exists, sqlite returns a duplicate-column error that can be ignored.
+	_, err = db.Exec("ALTER TABLE containerOptions ADD COLUMN capimmutable INTEGER NOT NULL DEFAULT 0;")
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name: capimmutable") {
+		m.log.warnf("could not migrate containerOptions.capimmutable column: %s", err)
+	}
 
 	var fkeysEnforced bool
 	err = db.QueryRow("PRAGMA foreign_keys;").Scan(&fkeysEnforced)

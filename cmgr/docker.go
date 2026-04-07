@@ -742,6 +742,9 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			if cOpts.CgroupParent != "" {
 				hConfig.CgroupParent = cOpts.CgroupParent
 			}
+			if cOpts.CapImmutable {
+				hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
+			}
 		}
 
 		hostInfo, err := m.cli.Info(m.ctx)
@@ -752,9 +755,6 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		if hostInfo.OSType == "linux" {
 			m.log.debug("inserting custom seccomp profile")
 			hConfig.SecurityOpt = append(hConfig.SecurityOpt, "seccomp:"+seccompPolicy)
-		}
-		if cOpts.CapImmutable {
-			hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
 		}
 
 		nConfig := network.NetworkingConfig{
