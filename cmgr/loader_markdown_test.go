@@ -339,6 +339,48 @@ func TestParseMarkdownPreservesTemplateQuotes(t *testing.T) {
 	}
 }
 
+func TestParseMarkdownPreservesTemplatesVerbatim(t *testing.T) {
+	mgr := newTestManager()
+	// Each input must round-trip with the template substring intact —
+	// no backslash-escapes on `_`, no HTML entity encoding on quotes,
+	// no Markdown emphasis from `_` pairs inside the template.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"url_for single quotes", "Found {{url_for('time.txt', 'here')}}.", "{{url_for('time.txt', 'here')}}"},
+		{"url_for double quotes", `Find {{url_for("lockbox", "here")}} now.`, `{{url_for("lockbox", "here")}}`},
+		{"url_for dotted filename", "Get {{url_for('disks.tar.gz', 'here')}} now.", "{{url_for('disks.tar.gz', 'here')}}"},
+		{"url_for mixed-case filename", "See {{url_for('BinEx101', 'program')}}.", "{{url_for('BinEx101', 'program')}}"},
+		{"lookup with underscore key", `User: {{lookup("user_name")}}`, `{{lookup("user_name")}}`},
+		{"bare server/port", "Connect to {{server}}:{{port}}", "{{server}}"},
+		{"template in list item", "- It is here: {{url_for('time.txt', 'here')}}.", "{{url_for('time.txt', 'here')}}"},
+		{"same template twice", "{{server}} then {{server}} again", "{{server}}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := mgr.parseMarkdown(tt.input)
+			if err != nil {
+				t.Fatalf("parseMarkdown error: %s", err)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("output missing %q\ngot: %s", tt.want, out)
+			}
+			if strings.Contains(out, `\_`) {
+				t.Errorf("output contains escaped underscore \\_\ngot: %s", out)
+			}
+			if strings.Contains(out, "&quot;") || strings.Contains(out, "&#39;") {
+				t.Errorf("output contains HTML-encoded quote\ngot: %s", out)
+			}
+			if strings.Contains(out, "@@@") {
+				t.Errorf("placeholder leaked into output\ngot: %s", out)
+			}
+		})
+	}
+}
+
 func TestParseBool(t *testing.T) {
 	trueCases := []string{"yes", "YES", "Yes", "true", "TRUE", "True", "1", "t", "T", "y", "Y"}
 	for _, tc := range trueCases {
