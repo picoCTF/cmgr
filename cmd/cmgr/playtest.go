@@ -96,8 +96,6 @@ func launchPortal(mgr *cmgr.Manager, iface string, port int, cid cmgr.ChallengeI
 				<body>
 			`))
 
-		w.Write([]byte(fmt.Sprintf(`<h1>%s</h1>`, cMeta.Name)))
-
 		artifactUrl := fmt.Sprintf("http://%s:%d/artifact/$1", iface, port)
 
 		description := cMeta.Description
@@ -109,8 +107,6 @@ func launchPortal(mgr *cmgr.Manager, iface string, port int, cid cmgr.ChallengeI
 				match[0],
 				fmt.Sprintf("%s", bMeta.LookupData[match[1]]))
 		}
-
-		w.Write([]byte(fmt.Sprintf(`<h2>Description</h2><p>%s</p>`, description)))
 
 		details := cMeta.Details
 		details = urlRe.ReplaceAllString(details, artifactUrl)
@@ -133,37 +129,45 @@ func launchPortal(mgr *cmgr.Manager, iface string, port int, cid cmgr.ChallengeI
 				fmt.Sprintf("%s", bMeta.LookupData[match[1]]))
 		}
 
-		w.Write([]byte(fmt.Sprintf(`<h2>Details</h2><p>%s</p>`, details)))
+		hints := make([]string, 0, len(cMeta.Hints))
+		for _, hint := range cMeta.Hints {
+			hint = urlRe.ReplaceAllString(hint, artifactUrl)
+			hint = serverRe.ReplaceAllString(hint, iface)
+			hint = httpBaseRe.ReplaceAllString(hint, fmt.Sprintf("http://%s", iface))
 
-		if len(cMeta.Hints) > 0 {
-			w.Write([]byte(`<h2>Hints</h2><ul>`))
-			for _, hint := range cMeta.Hints {
-				hint = urlRe.ReplaceAllString(hint, artifactUrl)
-				hint = serverRe.ReplaceAllString(hint, iface)
-				hint = httpBaseRe.ReplaceAllString(hint, fmt.Sprintf("http://%s", iface))
-
-				for portRe.MatchString(hint) {
-					match := portRe.FindStringSubmatch(hint)
-					hint = strings.ReplaceAll(
-						hint,
-						match[0],
-						fmt.Sprintf("%d", iMeta.Ports[match[1]]))
-				}
-
-				for lookupRe.MatchString(hint) {
-					match := lookupRe.FindStringSubmatch(hint)
-					hint = strings.ReplaceAll(
-						hint,
-						match[0],
-						fmt.Sprintf("%s", bMeta.LookupData[match[1]]))
-				}
-
-				w.Write([]byte(fmt.Sprintf(`<li>%s</li>`, hint)))
+			for portRe.MatchString(hint) {
+				match := portRe.FindStringSubmatch(hint)
+				hint = strings.ReplaceAll(
+					hint,
+					match[0],
+					fmt.Sprintf("%d", iMeta.Ports[match[1]]))
 			}
-			w.Write([]byte(`</ul>`))
+
+			for lookupRe.MatchString(hint) {
+				match := lookupRe.FindStringSubmatch(hint)
+				hint = strings.ReplaceAll(
+					hint,
+					match[0],
+					fmt.Sprintf("%s", bMeta.LookupData[match[1]]))
+			}
+
+			hints = append(hints, hint)
 		}
-		w.Write([]byte(`<h2>Submit Flag</h2>
-			<form action="/submit" method="get">
+
+		// Reconstruct the markdown that the loader produced (with templates
+		// resolved) and render it verbatim inside a <pre>. Playtest is a
+		// preview of the system's output, not a frontend renderer.
+		w.Write([]byte(`<pre style="white-space: pre-wrap">`))
+		fmt.Fprintf(w, "# %s\n\n## Description\n\n%s\n\n## Details\n\n%s\n", cMeta.Name, description, details)
+		if len(hints) > 0 {
+			w.Write([]byte("\n## Hints\n\n"))
+			for _, hint := range hints {
+				fmt.Fprintf(w, "- %s\n", hint)
+			}
+		}
+		w.Write([]byte(`</pre>`))
+
+		w.Write([]byte(`<form action="/submit" method="get">
 				<label for="flag">Flag:</label>
 				<input type="text" id="flag" name="flag">
 				<input type="submit" value="Submit">

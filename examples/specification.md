@@ -5,6 +5,22 @@
 - Category: example
 - Points: 1
 
+## Body Content
+
+`Description`, `Details`, and `Hints` are emitted as GitHub Flavored
+Markdown for the frontend to render. The source may freely mix Markdown
+syntax and raw HTML; any raw HTML is normalized to its Markdown
+equivalent before the field is stored, so `<code>`, `<a>`, `<em>`,
+`<strong>`, `<del>`, `<ul>`/`<ol>`/`<li>`, `<table>`, `<pre>`, `<hr>`,
+etc. all survive the round-trip as Markdown. Tags with no Markdown
+equivalent (e.g. `<script>` and most html attributes) are dropped.
+
+`<h2>` tags are technically possible via html (the markdown version on the
+other hand will cause a structural collision for `problem.md`), but should
+be avoided due to frontend-styling constraints.
+
+Line breaks follow standard Markdown rules.
+
 ## Description
 
 This portion of the challenge description is displayed to users regardless of whether an instance of the challenge is currently running. It may include static text, as well as the following templates:
@@ -40,6 +56,11 @@ an HTML href tag that uses `http_base`.
 - A list of hints for the end user.
 - The hints are all templatable.
 - Whether there is a cost for displaying them is up to the front-end system
+
+Each line starting with `-` at column 0 is parsed as the start of a new
+hint, so a Markdown `- item` list cannot appear inside the body of a
+single hint. If you need an unordered list, write it as `<ul><li>item</li></ul>`
+(which is normalized to a Markdown list in the stored hint).
 
 ## Tags
 

@@ -10,8 +10,38 @@ import (
 	"strconv"
 	"strings"
 
+	htmltomd "github.com/JohannesKaufmann/html-to-markdown"
+	"github.com/JohannesKaufmann/html-to-markdown/plugin"
+	"github.com/PuerkitoBio/goquery"
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer/html"
 	"gopkg.in/yaml.v2"
+)
+
+var (
+	markdownUnsafe = goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithRendererOptions(html.WithUnsafe()),
+	)
+	htmlConverter = func() *htmltomd.Converter {
+		c := htmltomd.NewConverter("", true, nil)
+		c.Use(plugin.GitHubFlavored())
+		// Preserve <br> as an inline HTML tag in the markdown output. The
+		// default rule converts <br> to a paragraph break (two newlines),
+		// which collapses a markdown hard line break ("  \n") into a
+		// paragraph break during the round-trip. Emitting <br> keeps the
+		// line break inside the paragraph; CommonMark renderers treat
+		// inline <br> as a hard line break natively.
+		c.AddRules(htmltomd.Rule{
+			Filter: []string{"br"},
+			Replacement: func(content string, sel *goquery.Selection, opt *htmltomd.Options) *string {
+				br := "<br>"
+				return &br
+			},
+		})
+		return c
+	}()
 )
 
 func parseBool(s string) (bool, error) {
@@ -284,22 +314,41 @@ func (m *Manager) parseHints(lines []string) ([]string, error) {
 }
 
 func (m *Manager) parseMarkdown(text string) (string, error) {
-	var buff bytes.Buffer
-	err := goldmark.Convert([]byte(text), &buff)
-	if err != nil {
+	// Templates like {{url_for('time.txt', 'here')}} contain characters
+	// (underscores, quotes) that the markdown round-trip would escape or
+	// HTML-encode, breaking downstream regex matching against the strict
+	// urlForRe/lookupRe/etc. patterns. Substitute each template with a
+	// neutral alphanumeric placeholder before rendering, restore them
+	// verbatim afterward.
+	templates := templateRe.FindAllString(text, -1)
+	for i, tmpl := range templates {
+		text = strings.Replace(text, tmpl, templatePlaceholder(i), 1)
+	}
+
+	// First pass: render markdown to HTML with raw HTML preserved, so any
+	// inline <code>, <a>, etc. in the source live alongside markdown-derived
+	// tags in a single HTML document.
+	var rawBuf bytes.Buffer
+	if err := markdownUnsafe.Convert([]byte(text), &rawBuf); err != nil {
 		return "", err
 	}
 
-	data, err := ioutil.ReadAll(&buff)
-	section := strings.TrimSpace(string(data))
-	templates := templateRe.FindAllStringIndex(section, -1)
-	for i := range templates {
-		pair := templates[len(templates)-(i+1)]
-		start, stop := pair[0], pair[1]
-		m.log.debugf("found template in range [%d, %d] (len(string) = %d", start, stop, len(section))
-		section = section[:start] +
-			strings.ReplaceAll(section[start:stop], "&quot;", `"`) +
-			section[stop:]
+	// Second pass: convert that HTML back to pure markdown. This normalizes
+	// raw HTML tags into their markdown equivalents and drops any tag with
+	// no markdown representation. The result is pure markdown for the
+	// frontend to render.
+	section, err := htmlConverter.ConvertString(rawBuf.String())
+	if err != nil {
+		return "", err
 	}
-	return section, err
+	section = strings.TrimSpace(section)
+
+	for i, tmpl := range templates {
+		section = strings.Replace(section, templatePlaceholder(i), tmpl, 1)
+	}
+	return section, nil
+}
+
+func templatePlaceholder(i int) string {
+	return fmt.Sprintf("@@@%d@@@", i)
 }

@@ -3,6 +3,8 @@ module github.com/picoCTF/cmgr
 go 1.26.0
 
 require (
+	github.com/JohannesKaufmann/html-to-markdown v1.6.0
+	github.com/PuerkitoBio/goquery v1.9.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/cli v29.4.3+incompatible
 	github.com/docker/go-units v0.5.0
@@ -16,6 +18,7 @@ require (
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -33,5 +36,6 @@ require (
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/metric v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
+	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )
