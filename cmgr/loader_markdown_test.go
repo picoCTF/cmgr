@@ -62,7 +62,7 @@ func TestParseMarkdownNormalizesRawHTML(t *testing.T) {
 		{"raw ordered list", "<ol><li>a</li><li>b</li></ol>", []string{"1. a", "2. b"}},
 		{"raw pre/code block", "<pre><code>hello\nworld</code></pre>", []string{"```", "hello", "world"}},
 		{"raw table", "<table><thead><tr><th>h1</th><th>h2</th></tr></thead><tbody><tr><td>a</td><td>b</td></tr></tbody></table>",
-			[]string{"| h1 | h2 |", "| --- | --- |", "| a | b |"}},
+			[]string{"| h1 | h2 |", "|---|---|", "| a | b |"}},
 	}
 
 	for _, tt := range tests {
