@@ -10,39 +10,51 @@ import (
 	"strconv"
 	"strings"
 
-	htmltomd "github.com/JohannesKaufmann/html-to-markdown"
-	"github.com/JohannesKaufmann/html-to-markdown/plugin"
-	"github.com/PuerkitoBio/goquery"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/renderer/html"
+	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
+	"golang.org/x/net/html"
 	"gopkg.in/yaml.v2"
 )
 
 var (
 	markdownUnsafe = goldmark.New(
 		goldmark.WithExtensions(extension.GFM),
-		goldmark.WithRendererOptions(html.WithUnsafe()),
+		goldmark.WithRendererOptions(goldmarkhtml.WithUnsafe()),
 	)
-	htmlConverter = func() *htmltomd.Converter {
-		c := htmltomd.NewConverter("", true, nil)
-		c.Use(plugin.GitHubFlavored())
+	htmlConverter = func() *converter.Converter {
+		c := converter.NewConverter(
+			converter.WithPlugins(
+				base.NewBasePlugin(),
+				commonmark.NewCommonmarkPlugin(
+					commonmark.WithEmDelimiter("_"),
+				),
+				strikethrough.NewStrikethroughPlugin(),
+				table.NewTablePlugin(
+					table.WithCellPaddingBehavior(table.CellPaddingBehaviorMinimal),
+				),
+			),
+		)
 		// Preserve <br> as an inline HTML tag in the markdown output. The
 		// default rule converts <br> to a paragraph break (two newlines),
 		// which collapses a markdown hard line break ("  \n") into a
 		// paragraph break during the round-trip. Emitting <br> keeps the
 		// line break inside the paragraph; CommonMark renderers treat
 		// inline <br> as a hard line break natively.
-		c.AddRules(htmltomd.Rule{
-			Filter: []string{"br"},
-			Replacement: func(content string, sel *goquery.Selection, opt *htmltomd.Options) *string {
-				br := "<br>"
-				return &br
-			},
-		})
+		c.Register.RendererFor("br", converter.TagTypeInline, renderBr, converter.PriorityEarly)
 		return c
 	}()
 )
+
+func renderBr(ctx converter.Context, w converter.Writer, n *html.Node) converter.RenderStatus {
+	w.WriteString("<br>")
+	return converter.RenderSuccess
+}
 
 func parseBool(s string) (bool, error) {
 	s = strings.ToLower(s)
