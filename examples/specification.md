@@ -25,8 +25,8 @@ and templated placeholders pass through untouched.
 
 The exception is the templated shortcuts (`{{url_for(...)}}`,
 `{{link(...)}}`, `{{link_as(...)}}`) described below: those expand to raw
-`<a>` HTML with `download` / `target='_blank'` after the markdown
-conversion has run, since markdown link syntax can't express those
+`<a>` HTML with `download` / `target='_blank'` after the Markdown
+conversion has run, since Markdown link syntax can't express those
 attributes. Authors cannot reproduce the same effect by writing
 `<a download>` directly — the conversion step will strip the attribute.
 
