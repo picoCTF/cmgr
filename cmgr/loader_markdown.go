@@ -394,21 +394,29 @@ var voidTags = map[string]bool{
 	"track": true, "wbr": true,
 }
 
-var rawTagRe = regexp.MustCompile(`^<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?(/?)\s*>$`)
-
+// parseRawTag classifies a raw HTML tag using net/html's tokenizer rather
+// than a regex. A regex-based approach can't correctly handle quoted
+// attribute values that contain `>` (e.g. `<a title="x>y" href="z">`),
+// which would leave such tags unrecognized — and therefore unconverted,
+// letting unsafe attributes survive into the stored markdown.
 func parseRawTag(content string) (name string, kind int) {
-	m := rawTagRe.FindStringSubmatch(content)
-	if m == nil {
-		return "", 0
+	z := html.NewTokenizer(strings.NewReader(content))
+	switch z.Next() {
+	case html.StartTagToken:
+		b, _ := z.TagName()
+		n := strings.ToLower(string(b))
+		if voidTags[n] {
+			return n, tagSelfClosing
+		}
+		return n, tagOpen
+	case html.SelfClosingTagToken:
+		b, _ := z.TagName()
+		return strings.ToLower(string(b)), tagSelfClosing
+	case html.EndTagToken:
+		b, _ := z.TagName()
+		return strings.ToLower(string(b)), tagClose
 	}
-	name = strings.ToLower(m[2])
-	if m[1] == "/" {
-		return name, tagClose
-	}
-	if m[3] == "/" || voidTags[name] {
-		return name, tagSelfClosing
-	}
-	return name, tagOpen
+	return "", 0
 }
 
 // collectHTMLSpans walks the AST and returns byte ranges in src that should

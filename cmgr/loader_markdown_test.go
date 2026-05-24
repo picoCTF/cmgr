@@ -94,6 +94,12 @@ func TestParseMarkdownStripsUnsupportedHTML(t *testing.T) {
 		{"iframe tag", `<iframe src="evil"></iframe>`, []string{"<iframe", "evil"}},
 		{"style tag", "<style>body{color:red}</style>", []string{"<style", "color:red"}},
 		{"inline event handler", `<a href="x" onclick="evil()">link</a>`, []string{"onclick", "evil()"}},
+		// Regression: a tag with a `>` inside a quoted attribute value must
+		// still be classified as a tag and routed through the converter,
+		// not skipped over. Otherwise unsafe attributes (onclick, etc.)
+		// could ride along verbatim. See PR #64 review.
+		{"gt in quoted attribute", `<a title="x>y" href="z" onclick="evil()">link</a>`, []string{"onclick", "evil()"}},
+		{"gt in quoted attribute (single quotes)", `<a title='x>y' onerror='evil()'>link</a>`, []string{"onerror", "evil()"}},
 	}
 
 	for _, tt := range tests {
