@@ -19,9 +19,12 @@ the element itself is still normalized to Markdown where possible — only
 `href`/`title` on links and `src`/`alt`/`title` on images are retained.
 Tags with no Markdown equivalent (e.g. `<script>`, `<iframe>`, `<style>`)
 are dropped entirely. Markdown content outside of HTML tags is preserved
-verbatim — no escaping, no whitespace normalization, no emphasis-delimiter
+verbatim — no escaping, no entity encoding, no emphasis-delimiter
 substitution — which means content like LaTeX (`$x_1$`, `$$\sum a_i$$`)
-and templated placeholders pass through untouched.
+and templated placeholders pass through untouched. The only whitespace
+normalization applied is an outer trim on each stored field; in the
+`Hints` section, continuation lines are additionally de-indented so the
+hint body isn't read as an indented code block.
 
 The exception is the templated shortcuts (`{{url_for(...)}}`,
 `{{link(...)}}`, `{{link_as(...)}}`) described below: those expand to raw

@@ -38,9 +38,8 @@ var (
 				),
 			),
 		)
-		// Preserve <br> as an inline HTML tag in the converted output. The
-		// default rule turns <br> into a paragraph break (two newlines),
-		// which would collapse hard line breaks inside an HTML span.
+		// Emit <br> as inline HTML so hard line breaks inside an HTML span
+		// don't collapse into paragraph breaks.
 		c.Register.RendererFor("br", converter.TagTypeInline, renderBr, converter.PriorityEarly)
 		return c
 	}()
@@ -321,11 +320,10 @@ func (m *Manager) parseHints(lines []string) ([]string, error) {
 }
 
 // parseMarkdown returns the source with author-written HTML elements
-// converted to their markdown equivalents in place. Markdown syntax outside
-// of HTML islands (text, headings, emphasis, lists, code, templates, math,
-// backslash escapes, etc.) is passed through verbatim — the source is never
-// rendered through HTML, so nothing gets normalized, escaped, or reformatted
-// behind the author's back.
+// converted in place to their markdown equivalents. Non-HTML markdown
+// (headings, emphasis, lists, code, math, templates, escapes) passes
+// through verbatim. The result is outer-trimmed of leading/trailing
+// whitespace.
 func (m *Manager) parseMarkdown(text string) (string, error) {
 	src := []byte(text)
 	reader := goldmarktext.NewReader(src)
@@ -336,10 +334,9 @@ func (m *Manager) parseMarkdown(text string) (string, error) {
 		return "", err
 	}
 
-	// Sort by start offset. Within a tie, the longer span wins (so a
-	// containing span is processed instead of an inner sibling). The
-	// pairing algorithm shouldn't emit overlapping spans, but the cursor
-	// check below guards against any straggler.
+	// Sort spans by start offset, longer spans winning on ties so nested
+	// HTML processes the outer span first. The cursor check below skips
+	// inner spans already consumed by an outer one.
 	sort.Slice(spans, func(i, j int) bool {
 		if spans[i].start != spans[j].start {
 			return spans[i].start < spans[j].start
@@ -394,11 +391,10 @@ var voidTags = map[string]bool{
 	"track": true, "wbr": true,
 }
 
-// parseRawTag classifies a raw HTML tag using net/html's tokenizer rather
-// than a regex. A regex-based approach can't correctly handle quoted
-// attribute values that contain `>` (e.g. `<a title="x>y" href="z">`),
-// which would leave such tags unrecognized — and therefore unconverted,
-// letting unsafe attributes survive into the stored markdown.
+// parseRawTag classifies a raw HTML tag via net/html's tokenizer. Returns
+// the lowercase tag name and one of tagOpen/tagClose/tagSelfClosing, or
+// ("", 0) for input that isn't a single recognizable tag (comments,
+// CDATA, doctypes, etc.).
 func parseRawTag(content string) (name string, kind int) {
 	z := html.NewTokenizer(strings.NewReader(content))
 	switch z.Next() {
@@ -451,8 +447,7 @@ func collectHTMLSpans(doc ast.Node, src []byte) ([]htmlSpan, error) {
 				content := string(src[seg.Start:seg.Stop])
 				name, kind := parseRawTag(content)
 				if kind == 0 {
-					// Comment, CDATA, doctype, processing instruction, etc.
-					// Skip — leave the source bytes untouched.
+					// Comment/CDATA/doctype/etc. — leave source bytes alone.
 					continue
 				}
 				inlineTags = append(inlineTags, rawTag{

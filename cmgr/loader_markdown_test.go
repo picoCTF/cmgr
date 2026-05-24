@@ -94,10 +94,8 @@ func TestParseMarkdownStripsUnsupportedHTML(t *testing.T) {
 		{"iframe tag", `<iframe src="evil"></iframe>`, []string{"<iframe", "evil"}},
 		{"style tag", "<style>body{color:red}</style>", []string{"<style", "color:red"}},
 		{"inline event handler", `<a href="x" onclick="evil()">link</a>`, []string{"onclick", "evil()"}},
-		// Regression: a tag with a `>` inside a quoted attribute value must
-		// still be classified as a tag and routed through the converter,
-		// not skipped over. Otherwise unsafe attributes (onclick, etc.)
-		// could ride along verbatim. See PR #64 review.
+		// `>` inside a quoted attribute value must not break tag
+		// classification — otherwise unsafe attrs ride along verbatim.
 		{"gt in quoted attribute", `<a title="x>y" href="z" onclick="evil()">link</a>`, []string{"onclick", "evil()"}},
 		{"gt in quoted attribute (single quotes)", `<a title='x>y' onerror='evil()'>link</a>`, []string{"onerror", "evil()"}},
 	}
@@ -169,10 +167,7 @@ func TestParseMarkdownPreservesParagraphsAndBreaks(t *testing.T) {
 	}
 }
 
-// TestParseMarkdownHTMLIslandBoundaries pins down behaviors at the seam
-// between HTML spans and surrounding markdown — the cases the islands-only
-// design implicitly relies on but doesn't make obvious from reading
-// parseMarkdown.
+// Behaviors at the seam between HTML spans and surrounding markdown.
 func TestParseMarkdownHTMLIslandBoundaries(t *testing.T) {
 	mgr := newTestManager()
 	tests := []struct {
@@ -182,27 +177,19 @@ func TestParseMarkdownHTMLIslandBoundaries(t *testing.T) {
 		excludes []string
 	}{
 		{
-			// HTML inside markdown emphasis: the inner span gets converted
-			// (<em>x</em> → _x_), but the outer asterisks are not an HTML
-			// island so they pass through verbatim.
+			// Inner HTML converts; outer markdown emphasis passes through.
 			name:     "html inside markdown emphasis",
 			input:    `*before <em>x</em> after*`,
 			contains: []string{`*before `, `_x_`, ` after*`},
 		},
 		{
-			// Goldmark treats fenced code blocks as opaque; no RawHTML
-			// nodes are emitted from inside them. The bytes pass through
-			// untouched, so <script> stays inert literal text inside the
-			// fence (it's not interpretable HTML at render time).
+			// Fenced code blocks are opaque — no HTML conversion inside.
 			name:     "html inside fenced code block is opaque",
 			input:    "```\n<script>bad</script>\n```",
 			contains: []string{"<script>bad</script>"},
 		},
 		{
-			// Nested HTML: the outer span fully contains the inner span.
-			// After sort (start asc, end desc) the outer runs first and
-			// the cursor check skips the inner span. v2 converts the whole
-			// nested structure in one shot.
+			// Outer span wins; inner span is byte-contained and skipped.
 			name:     "nested html collapses to outer span",
 			input:    `<a href="x"><strong>bold</strong></a>`,
 			contains: []string{"[**bold**](x)"},
@@ -483,39 +470,23 @@ func TestParseMarkdownPassesThroughVerbatim(t *testing.T) {
 	}
 }
 
-// TestParseMarkdownNoHTMLIsIdentity locks in the core invariant of the
-// islands-only parseMarkdown pipeline: if the input contains no raw HTML
-// tags, the output must equal the input byte-for-byte (modulo the outer
-// strings.TrimSpace that parseMarkdown applies). This is what guarantees
-// LaTeX / math / templates / backslash escapes / etc. survive untouched,
-// even for tricky patterns we haven't individually enumerated. If this
-// test fails, the loader is doing something to non-HTML markdown that it
-// shouldn't be.
+// Inputs with no HTML tags must round-trip identically (modulo outer
+// TrimSpace). This is the architectural guarantee that LaTeX, math,
+// templates, escapes etc. survive untouched.
 func TestParseMarkdownNoHTMLIsIdentity(t *testing.T) {
 	mgr := newTestManager()
 	inputs := []string{
-		// Inline and display math, including patterns that markdown would
-		// normally mangle: asterisks/underscores inside math, brace-flanked
-		// underscores, angle brackets in comparisons, backslash sequences.
 		"Plain text with $x_1$ and $x_2$ subscripts.",
 		"Display:\n\n$$\\sum_{i=1}^{n} a_i \\cdot b_i$$\n\nEnd.",
 		"Asterisk math: $a*b*c$, brace-flanked: ${a}_b_{c}$, comparison: $x < y$ and $a \\leq b$.",
 		"Greek: $\\alpha, \\beta, \\gamma$. Operators: $\\sum$, $\\int$, $\\prod$.",
 		"Frac and sub: $\\frac{x_1}{y_1}$, double sub: $a_{i,j}^{k+1}$.",
 		`Backslash escapes: \$5, \_under, \*star, \[bracket\].`,
-
-		// Emphasis-delimiter and structural syntax — verbatim, not normalized.
 		"Both emphasis forms: *one* and _two_ and **three** and __four__.",
 		"Hard break  \nbetween lines.",
 		"Horizontal rules: ---, ***, ___, three flavors.",
-
-		// Code (inline and fenced) — must pass through opaquely.
 		"Code: `inline` and\n\n```\nblock with $x_1$\n```\n\ndone.",
-
-		// Templates verbatim alongside math.
 		"Connect to {{server}}:{{port}} for $\\pi$ secrets.",
-
-		// Mixed structures: math inside list items, inside blockquotes.
 		"List:\n\n- math: $\\pi r^2$\n- code: `printf(\"%d\\n\", x)`\n- combo: $E=mc^2$\n",
 		"> Quoted: $\\int_0^\\infty e^{-x} dx = 1$.\n> Second quoted line with $x_1$.",
 	}
