@@ -497,10 +497,9 @@ func pairInlineTags(tags []rawTag) []htmlSpan {
 			}
 			if matched >= 0 {
 				spans = append(spans, htmlSpan{stack[matched].start, t.end})
-				// Any unclosed openers above the match are orphans.
-				for _, orphan := range stack[matched+1:] {
-					spans = append(spans, htmlSpan{orphan.start, orphan.end})
-				}
+				// Discard any unclosed openers above the match. Emitting spans
+				// for them here would only create overlaps with the matched span,
+				// and those overlapping spans are skipped later.
 				stack = stack[:matched]
 			} else {
 				spans = append(spans, htmlSpan{t.start, t.end})
