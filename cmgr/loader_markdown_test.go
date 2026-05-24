@@ -417,6 +417,54 @@ func TestParseMarkdownPassesThroughVerbatim(t *testing.T) {
 	}
 }
 
+// TestParseMarkdownNoHTMLIsIdentity locks in the core invariant of the
+// islands-only parseMarkdown pipeline: if the input contains no raw HTML
+// tags, the output must equal the input byte-for-byte (modulo the outer
+// strings.TrimSpace that parseMarkdown applies). This is what guarantees
+// LaTeX / math / templates / backslash escapes / etc. survive untouched,
+// even for tricky patterns we haven't individually enumerated. If this
+// test fails, the loader is doing something to non-HTML markdown that it
+// shouldn't be.
+func TestParseMarkdownNoHTMLIsIdentity(t *testing.T) {
+	mgr := newTestManager()
+	inputs := []string{
+		// Inline and display math, including patterns that markdown would
+		// normally mangle: asterisks/underscores inside math, brace-flanked
+		// underscores, angle brackets in comparisons, backslash sequences.
+		"Plain text with $x_1$ and $x_2$ subscripts.",
+		"Display:\n\n$$\\sum_{i=1}^{n} a_i \\cdot b_i$$\n\nEnd.",
+		"Asterisk math: $a*b*c$, brace-flanked: ${a}_b_{c}$, comparison: $x < y$ and $a \\leq b$.",
+		"Greek: $\\alpha, \\beta, \\gamma$. Operators: $\\sum$, $\\int$, $\\prod$.",
+		"Frac and sub: $\\frac{x_1}{y_1}$, double sub: $a_{i,j}^{k+1}$.",
+		`Backslash escapes: \$5, \_under, \*star, \[bracket\].`,
+
+		// Emphasis-delimiter and structural syntax — verbatim, not normalized.
+		"Both emphasis forms: *one* and _two_ and **three** and __four__.",
+		"Hard break  \nbetween lines.",
+		"Horizontal rules: ---, ***, ___, three flavors.",
+
+		// Code (inline and fenced) — must pass through opaquely.
+		"Code: `inline` and\n\n```\nblock with $x_1$\n```\n\ndone.",
+
+		// Templates verbatim alongside math.
+		"Connect to {{server}}:{{port}} for $\\pi$ secrets.",
+
+		// Mixed structures: math inside list items, inside blockquotes.
+		"List:\n\n- math: $\\pi r^2$\n- code: `printf(\"%d\\n\", x)`\n- combo: $E=mc^2$\n",
+		"> Quoted: $\\int_0^\\infty e^{-x} dx = 1$.\n> Second quoted line with $x_1$.",
+	}
+	for _, input := range inputs {
+		out, err := mgr.parseMarkdown(input)
+		if err != nil {
+			t.Fatalf("parseMarkdown(%q): %s", input, err)
+		}
+		want := strings.TrimSpace(input)
+		if out != want {
+			t.Errorf("not identity:\ninput:  %q\noutput: %q", input, out)
+		}
+	}
+}
+
 func TestParseBool(t *testing.T) {
 	trueCases := []string{"yes", "YES", "Yes", "true", "TRUE", "True", "1", "t", "T", "y", "Y"}
 	for _, tc := range trueCases {
