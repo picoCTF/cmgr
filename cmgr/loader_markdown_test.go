@@ -169,6 +169,66 @@ func TestParseMarkdownPreservesParagraphsAndBreaks(t *testing.T) {
 	}
 }
 
+// TestParseMarkdownHTMLIslandBoundaries pins down behaviors at the seam
+// between HTML spans and surrounding markdown — the cases the islands-only
+// design implicitly relies on but doesn't make obvious from reading
+// parseMarkdown.
+func TestParseMarkdownHTMLIslandBoundaries(t *testing.T) {
+	mgr := newTestManager()
+	tests := []struct {
+		name     string
+		input    string
+		contains []string
+		excludes []string
+	}{
+		{
+			// HTML inside markdown emphasis: the inner span gets converted
+			// (<em>x</em> → _x_), but the outer asterisks are not an HTML
+			// island so they pass through verbatim.
+			name:     "html inside markdown emphasis",
+			input:    `*before <em>x</em> after*`,
+			contains: []string{`*before `, `_x_`, ` after*`},
+		},
+		{
+			// Goldmark treats fenced code blocks as opaque; no RawHTML
+			// nodes are emitted from inside them. The bytes pass through
+			// untouched, so <script> stays inert literal text inside the
+			// fence (it's not interpretable HTML at render time).
+			name:     "html inside fenced code block is opaque",
+			input:    "```\n<script>bad</script>\n```",
+			contains: []string{"<script>bad</script>"},
+		},
+		{
+			// Nested HTML: the outer span fully contains the inner span.
+			// After sort (start asc, end desc) the outer runs first and
+			// the cursor check skips the inner span. v2 converts the whole
+			// nested structure in one shot.
+			name:     "nested html collapses to outer span",
+			input:    `<a href="x"><strong>bold</strong></a>`,
+			contains: []string{"[**bold**](x)"},
+			excludes: []string{"<a ", "<strong>", "</strong>", "</a>"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := mgr.parseMarkdown(tt.input)
+			if err != nil {
+				t.Fatalf("parseMarkdown error: %s", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\ngot: %q", want, out)
+				}
+			}
+			for _, bad := range tt.excludes {
+				if strings.Contains(out, bad) {
+					t.Errorf("output should not contain %q\ngot: %q", bad, out)
+				}
+			}
+		})
+	}
+}
+
 func TestParseMarkdownMixedSource(t *testing.T) {
 	mgr := newTestManager()
 	input := "# Title\n\nSome `inline` and <code>raw</code> code, plus [md link](https://md.example) and <a href=\"https://html.example\">html link</a>."
