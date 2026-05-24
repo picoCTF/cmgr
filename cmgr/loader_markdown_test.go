@@ -23,11 +23,11 @@ func TestParseMarkdownNativeSyntax(t *testing.T) {
 		{"backtick inline code", "Use `foo` here.", []string{"`foo`"}},
 		{"fenced code block", "```\nhello\n```", []string{"```", "hello"}},
 		{"heading", "## A heading", []string{"## A heading"}},
-		{"bold and italic", "**bold** and *italic*", []string{"**bold**", "_italic_"}},
+		{"bold and italic", "**bold** and *italic*", []string{"**bold**", "*italic*"}},
 		{"unordered list", "- one\n- two", []string{"- one", "- two"}},
 		{"ordered list", "1. one\n2. two", []string{"1. one", "2. two"}},
 		{"link", "[example](https://example.com)", []string{"[example](https://example.com)"}},
-		{"horizontal rule", "before\n\n---\n\nafter", []string{"* * *"}},
+		{"horizontal rule", "before\n\n---\n\nafter", []string{"---"}},
 		{"blockquote", "> quoted", []string{"> quoted"}},
 	}
 
@@ -94,6 +94,10 @@ func TestParseMarkdownStripsUnsupportedHTML(t *testing.T) {
 		{"iframe tag", `<iframe src="evil"></iframe>`, []string{"<iframe", "evil"}},
 		{"style tag", "<style>body{color:red}</style>", []string{"<style", "color:red"}},
 		{"inline event handler", `<a href="x" onclick="evil()">link</a>`, []string{"onclick", "evil()"}},
+		// `>` inside a quoted attribute value must not break tag
+		// classification — otherwise unsafe attrs ride along verbatim.
+		{"gt in quoted attribute", `<a title="x>y" href="z" onclick="evil()">link</a>`, []string{"onclick", "evil()"}},
+		{"gt in quoted attribute (single quotes)", `<a title='x>y' onerror='evil()'>link</a>`, []string{"onerror", "evil()"}},
 	}
 
 	for _, tt := range tests {
@@ -125,9 +129,9 @@ func TestParseMarkdownPreservesParagraphsAndBreaks(t *testing.T) {
 			contains: []string{"First paragraph.\n\nSecond paragraph.\n\nThird."},
 		},
 		{
-			name:     "md hard break preserved as <br>",
+			name:     "md hard break preserved verbatim",
 			input:    "Line one  \nLine two\n\nNew para.",
-			contains: []string{"Line one<br>", "Line two", "New para."},
+			contains: []string{"Line one  \nLine two", "New para."},
 			excludes: []string{"Line one\n\nLine two"},
 		},
 		{
@@ -143,6 +147,55 @@ func TestParseMarkdownPreservesParagraphsAndBreaks(t *testing.T) {
 		},
 	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := mgr.parseMarkdown(tt.input)
+			if err != nil {
+				t.Fatalf("parseMarkdown error: %s", err)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\ngot: %q", want, out)
+				}
+			}
+			for _, bad := range tt.excludes {
+				if strings.Contains(out, bad) {
+					t.Errorf("output should not contain %q\ngot: %q", bad, out)
+				}
+			}
+		})
+	}
+}
+
+// Behaviors at the seam between HTML spans and surrounding markdown.
+func TestParseMarkdownHTMLIslandBoundaries(t *testing.T) {
+	mgr := newTestManager()
+	tests := []struct {
+		name     string
+		input    string
+		contains []string
+		excludes []string
+	}{
+		{
+			// Inner HTML converts; outer markdown emphasis passes through.
+			name:     "html inside markdown emphasis",
+			input:    `*before <em>x</em> after*`,
+			contains: []string{`*before `, `_x_`, ` after*`},
+		},
+		{
+			// Fenced code blocks are opaque — no HTML conversion inside.
+			name:     "html inside fenced code block is opaque",
+			input:    "```\n<script>bad</script>\n```",
+			contains: []string{"<script>bad</script>"},
+		},
+		{
+			// Outer span wins; inner span is byte-contained and skipped.
+			name:     "nested html collapses to outer span",
+			input:    `<a href="x"><strong>bold</strong></a>`,
+			contains: []string{"[**bold**](x)"},
+			excludes: []string{"<a ", "<strong>", "</strong>", "</a>"},
+		},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out, err := mgr.parseMarkdown(tt.input)
@@ -378,6 +431,74 @@ func TestParseMarkdownPreservesTemplatesVerbatim(t *testing.T) {
 				t.Errorf("placeholder leaked into output\ngot: %s", out)
 			}
 		})
+	}
+}
+
+func TestParseMarkdownPassesThroughVerbatim(t *testing.T) {
+	mgr := newTestManager()
+	// Markdown content outside of HTML tags must survive the parser
+	// untouched. No emphasis-delimiter substitution, no backslash escapes
+	// added, no whitespace reflowing, no entity encoding.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"inline math", "Energy is $E = mc^2$ at rest.", "$E = mc^2$"},
+		{"subscript math", "Solve for $x_1$ and $x_2$.", "$x_1$"},
+		{"display math", "Display:\n\n$$\\sum_{i=1}^{n} a_i$$\n\nDone.", "$$\\sum_{i=1}^{n} a_i$$"},
+		{"math with asterisk", "Product: $a*b*c$ done.", "$a*b*c$"},
+		{"backslash escape", `Cost is \$5 today.`, `\$5`},
+		{"escaped underscore", `Use foo\_bar here.`, `foo\_bar`},
+		{"asterisk italic verbatim", "This is *italic* not _italic_.", "*italic*"},
+		{"underscore italic verbatim", "This is _italic_ not *italic*.", "_italic_"},
+		{"hr verbatim", "before\n\n---\n\nafter", "---"},
+		{"hr alt syntax verbatim", "before\n\n***\n\nafter", "***"},
+		{"hard break verbatim", "Line one  \nLine two", "Line one  \nLine two"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := mgr.parseMarkdown(tt.input)
+			if err != nil {
+				t.Fatalf("parseMarkdown error: %s", err)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("output missing %q\ngot: %q", tt.want, out)
+			}
+		})
+	}
+}
+
+// Inputs with no HTML tags must round-trip identically (modulo outer
+// TrimSpace). This is the architectural guarantee that LaTeX, math,
+// templates, escapes etc. survive untouched.
+func TestParseMarkdownNoHTMLIsIdentity(t *testing.T) {
+	mgr := newTestManager()
+	inputs := []string{
+		"Plain text with $x_1$ and $x_2$ subscripts.",
+		"Display:\n\n$$\\sum_{i=1}^{n} a_i \\cdot b_i$$\n\nEnd.",
+		"Asterisk math: $a*b*c$, brace-flanked: ${a}_b_{c}$, comparison: $x < y$ and $a \\leq b$.",
+		"Greek: $\\alpha, \\beta, \\gamma$. Operators: $\\sum$, $\\int$, $\\prod$.",
+		"Frac and sub: $\\frac{x_1}{y_1}$, double sub: $a_{i,j}^{k+1}$.",
+		`Backslash escapes: \$5, \_under, \*star, \[bracket\].`,
+		"Both emphasis forms: *one* and _two_ and **three** and __four__.",
+		"Hard break  \nbetween lines.",
+		"Horizontal rules: ---, ***, ___, three flavors.",
+		"Code: `inline` and\n\n```\nblock with $x_1$\n```\n\ndone.",
+		"Connect to {{server}}:{{port}} for $\\pi$ secrets.",
+		"List:\n\n- math: $\\pi r^2$\n- code: `printf(\"%d\\n\", x)`\n- combo: $E=mc^2$\n",
+		"> Quoted: $\\int_0^\\infty e^{-x} dx = 1$.\n> Second quoted line with $x_1$.",
+	}
+	for _, input := range inputs {
+		out, err := mgr.parseMarkdown(input)
+		if err != nil {
+			t.Fatalf("parseMarkdown(%q): %s", input, err)
+		}
+		want := strings.TrimSpace(input)
+		if out != want {
+			t.Errorf("not identity:\ninput:  %q\noutput: %q", input, out)
+		}
 	}
 }
 

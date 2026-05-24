@@ -9,11 +9,29 @@
 
 `Description`, `Details`, and `Hints` are emitted as GitHub Flavored
 Markdown for the frontend to render. The source may freely mix Markdown
-syntax and raw HTML; any raw HTML is normalized to its Markdown
-equivalent before the field is stored, so `<code>`, `<a>`, `<em>`,
-`<strong>`, `<del>`, `<ul>`/`<ol>`/`<li>`, `<table>`, `<pre>`, `<hr>`,
-etc. all survive the round-trip as Markdown. Tags with no Markdown
-equivalent (e.g. `<script>` and most html attributes) are dropped.
+syntax and raw HTML; any author-written raw HTML elements are converted
+in place to their Markdown equivalents before the field is stored, so
+`<code>`, `<a>`, `<em>`, `<strong>`, `<del>`, `<ul>`/`<ol>`/`<li>`,
+`<table>`, `<pre>`, `<hr>`, etc. are normalized to Markdown. Author-written
+attributes beyond what Markdown can express (`download`, `target`,
+`onclick`, `class`, `style`, etc.) are stripped during conversion, while
+the element itself is still normalized to Markdown where possible — only
+`href`/`title` on links and `src`/`alt`/`title` on images are retained.
+Tags with no Markdown equivalent (e.g. `<script>`, `<iframe>`, `<style>`)
+are dropped entirely. Markdown content outside of HTML tags is preserved
+verbatim — no escaping, no entity encoding, no emphasis-delimiter
+substitution — which means content like LaTeX (`$x_1$`, `$$\sum a_i$$`)
+and templated placeholders pass through untouched. The only whitespace
+normalization applied is an outer trim on each stored field; in the
+`Hints` section, continuation lines are additionally de-indented so the
+hint body isn't read as an indented code block.
+
+The exception is the templated shortcuts (`{{url_for(...)}}`,
+`{{link(...)}}`, `{{link_as(...)}}`) described below: those expand to raw
+`<a>` HTML with `download` / `target='_blank'` after the Markdown
+conversion has run, since Markdown link syntax can't express those
+attributes. Authors cannot reproduce the same effect by writing
+`<a download>` directly — the conversion step will strip the attribute.
 
 `<h2>` tags are technically possible via html (the markdown version on the
 other hand will cause a structural collision for `problem.md`), but should
