@@ -14,8 +14,9 @@ in place to their Markdown equivalents before the field is stored, so
 `<code>`, `<a>`, `<em>`, `<strong>`, `<del>`, `<ul>`/`<ol>`/`<li>`,
 `<table>`, `<pre>`, `<hr>`, etc. are normalized to Markdown. Author-written
 attributes beyond what Markdown can express (`download`, `target`,
-`onclick`, `class`, `style`, etc.) are dropped along with their tags —
-only `href`/`title` on links and `src`/`alt`/`title` on images survive.
+`onclick`, `class`, `style`, etc.) are stripped during conversion, while
+the element itself is still normalized to Markdown where possible — only
+`href`/`title` on links and `src`/`alt`/`title` on images are retained.
 Tags with no Markdown equivalent (e.g. `<script>`, `<iframe>`, `<style>`)
 are dropped entirely. Markdown content outside of HTML tags is preserved
 verbatim — no escaping, no whitespace normalization, no emphasis-delimiter
