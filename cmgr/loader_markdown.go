@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,18 +17,15 @@ import (
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
 	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/extension"
-	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/ast"
+	goldmarktext "github.com/yuin/goldmark/text"
 	"golang.org/x/net/html"
 	"gopkg.in/yaml.v2"
 )
 
 var (
-	markdownUnsafe = goldmark.New(
-		goldmark.WithExtensions(extension.GFM),
-		goldmark.WithRendererOptions(goldmarkhtml.WithUnsafe()),
-	)
-	htmlConverter = func() *converter.Converter {
+	markdownParser = goldmark.DefaultParser()
+	htmlConverter  = func() *converter.Converter {
 		c := converter.NewConverter(
 			converter.WithPlugins(
 				base.NewBasePlugin(),
@@ -40,12 +38,9 @@ var (
 				),
 			),
 		)
-		// Preserve <br> as an inline HTML tag in the markdown output. The
-		// default rule converts <br> to a paragraph break (two newlines),
-		// which collapses a markdown hard line break ("  \n") into a
-		// paragraph break during the round-trip. Emitting <br> keeps the
-		// line break inside the paragraph; CommonMark renderers treat
-		// inline <br> as a hard line break natively.
+		// Preserve <br> as an inline HTML tag in the converted output. The
+		// default rule turns <br> into a paragraph break (two newlines),
+		// which would collapse hard line breaks inside an HTML span.
 		c.Register.RendererFor("br", converter.TagTypeInline, renderBr, converter.PriorityEarly)
 		return c
 	}()
@@ -325,42 +320,187 @@ func (m *Manager) parseHints(lines []string) ([]string, error) {
 	return hints, err
 }
 
+// parseMarkdown returns the source with author-written HTML elements
+// converted to their markdown equivalents in place. Markdown syntax outside
+// of HTML islands (text, headings, emphasis, lists, code, templates, math,
+// backslash escapes, etc.) is passed through verbatim — the source is never
+// rendered through HTML, so nothing gets normalized, escaped, or reformatted
+// behind the author's back.
 func (m *Manager) parseMarkdown(text string) (string, error) {
-	// Templates like {{url_for('time.txt', 'here')}} contain characters
-	// (underscores, quotes) that the markdown round-trip would escape or
-	// HTML-encode, breaking downstream regex matching against the strict
-	// urlForRe/lookupRe/etc. patterns. Substitute each template with a
-	// neutral alphanumeric placeholder before rendering, restore them
-	// verbatim afterward.
-	templates := templateRe.FindAllString(text, -1)
-	for i, tmpl := range templates {
-		text = strings.Replace(text, tmpl, templatePlaceholder(i), 1)
-	}
+	src := []byte(text)
+	reader := goldmarktext.NewReader(src)
+	doc := markdownParser.Parse(reader)
 
-	// First pass: render markdown to HTML with raw HTML preserved, so any
-	// inline <code>, <a>, etc. in the source live alongside markdown-derived
-	// tags in a single HTML document.
-	var rawBuf bytes.Buffer
-	if err := markdownUnsafe.Convert([]byte(text), &rawBuf); err != nil {
-		return "", err
-	}
-
-	// Second pass: convert that HTML back to pure markdown. This normalizes
-	// raw HTML tags into their markdown equivalents and drops any tag with
-	// no markdown representation. The result is pure markdown for the
-	// frontend to render.
-	section, err := htmlConverter.ConvertString(rawBuf.String())
+	spans, err := collectHTMLSpans(doc, src)
 	if err != nil {
 		return "", err
 	}
-	section = strings.TrimSpace(section)
 
-	for i, tmpl := range templates {
-		section = strings.Replace(section, templatePlaceholder(i), tmpl, 1)
+	// Sort by start offset. Within a tie, the longer span wins (so a
+	// containing span is processed instead of an inner sibling). The
+	// pairing algorithm shouldn't emit overlapping spans, but the cursor
+	// check below guards against any straggler.
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start != spans[j].start {
+			return spans[i].start < spans[j].start
+		}
+		return spans[i].end > spans[j].end
+	})
+
+	var out bytes.Buffer
+	cursor := 0
+	for _, sp := range spans {
+		if sp.start < cursor {
+			continue
+		}
+		if sp.start > cursor {
+			out.Write(src[cursor:sp.start])
+		}
+		converted, err := htmlConverter.ConvertString(string(src[sp.start:sp.end]))
+		if err != nil {
+			return "", err
+		}
+		out.WriteString(converted)
+		cursor = sp.end
 	}
-	return section, nil
+	if cursor < len(src) {
+		out.Write(src[cursor:])
+	}
+
+	return strings.TrimSpace(out.String()), nil
 }
 
-func templatePlaceholder(i int) string {
-	return fmt.Sprintf("@@@%d@@@", i)
+type htmlSpan struct {
+	start, end int
+}
+
+type rawTag struct {
+	start, end int
+	name       string
+	kind       int
+}
+
+const (
+	tagOpen        = 1
+	tagClose       = 2
+	tagSelfClosing = 3
+)
+
+// HTML void elements: never have a closing tag. Per the WHATWG spec.
+var voidTags = map[string]bool{
+	"area": true, "base": true, "br": true, "col": true,
+	"embed": true, "hr": true, "img": true, "input": true,
+	"link": true, "meta": true, "param": true, "source": true,
+	"track": true, "wbr": true,
+}
+
+var rawTagRe = regexp.MustCompile(`^<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?(/?)\s*>$`)
+
+func parseRawTag(content string) (name string, kind int) {
+	m := rawTagRe.FindStringSubmatch(content)
+	if m == nil {
+		return "", 0
+	}
+	name = strings.ToLower(m[2])
+	if m[1] == "/" {
+		return name, tagClose
+	}
+	if m[3] == "/" || voidTags[name] {
+		return name, tagSelfClosing
+	}
+	return name, tagOpen
+}
+
+// collectHTMLSpans walks the AST and returns byte ranges in src that should
+// be substituted with their HTML→markdown converted form. HTMLBlock nodes
+// contribute their full span; inline RawHTML tags are paired open-with-close
+// via a stack so that `<a href="x">y</a>` resolves to one span covering both
+// tags and the text in between.
+func collectHTMLSpans(doc ast.Node, src []byte) ([]htmlSpan, error) {
+	var spans []htmlSpan
+	var inlineTags []rawTag
+
+	err := ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch n := n.(type) {
+		case *ast.HTMLBlock:
+			lines := n.Lines()
+			if lines.Len() > 0 {
+				start := lines.At(0).Start
+				end := lines.At(lines.Len() - 1).Stop
+				spans = append(spans, htmlSpan{start, end})
+			}
+			return ast.WalkSkipChildren, nil
+		case *ast.RawHTML:
+			segs := n.Segments
+			if segs == nil {
+				return ast.WalkContinue, nil
+			}
+			for i := 0; i < segs.Len(); i++ {
+				seg := segs.At(i)
+				content := string(src[seg.Start:seg.Stop])
+				name, kind := parseRawTag(content)
+				if kind == 0 {
+					// Comment, CDATA, doctype, processing instruction, etc.
+					// Skip — leave the source bytes untouched.
+					continue
+				}
+				inlineTags = append(inlineTags, rawTag{
+					start: seg.Start,
+					end:   seg.Stop,
+					name:  name,
+					kind:  kind,
+				})
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	spans = append(spans, pairInlineTags(inlineTags)...)
+	return spans, nil
+}
+
+// pairInlineTags consumes a source-ordered list of inline raw-HTML tags and
+// returns a list of spans. Open tags are paired with the next matching close
+// tag via a stack; unmatched openers/closers and void/self-closing tags each
+// form their own single-tag span.
+func pairInlineTags(tags []rawTag) []htmlSpan {
+	var spans []htmlSpan
+	var stack []rawTag
+
+	for _, t := range tags {
+		switch t.kind {
+		case tagSelfClosing:
+			spans = append(spans, htmlSpan{t.start, t.end})
+		case tagOpen:
+			stack = append(stack, t)
+		case tagClose:
+			matched := -1
+			for i := len(stack) - 1; i >= 0; i-- {
+				if stack[i].name == t.name {
+					matched = i
+					break
+				}
+			}
+			if matched >= 0 {
+				spans = append(spans, htmlSpan{stack[matched].start, t.end})
+				// Any unclosed openers above the match are orphans.
+				for _, orphan := range stack[matched+1:] {
+					spans = append(spans, htmlSpan{orphan.start, orphan.end})
+				}
+				stack = stack[:matched]
+			} else {
+				spans = append(spans, htmlSpan{t.start, t.end})
+			}
+		}
+	}
+	for _, orphan := range stack {
+		spans = append(spans, htmlSpan{orphan.start, orphan.end})
+	}
+	return spans
 }

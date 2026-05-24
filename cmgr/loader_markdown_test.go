@@ -23,11 +23,11 @@ func TestParseMarkdownNativeSyntax(t *testing.T) {
 		{"backtick inline code", "Use `foo` here.", []string{"`foo`"}},
 		{"fenced code block", "```\nhello\n```", []string{"```", "hello"}},
 		{"heading", "## A heading", []string{"## A heading"}},
-		{"bold and italic", "**bold** and *italic*", []string{"**bold**", "_italic_"}},
+		{"bold and italic", "**bold** and *italic*", []string{"**bold**", "*italic*"}},
 		{"unordered list", "- one\n- two", []string{"- one", "- two"}},
 		{"ordered list", "1. one\n2. two", []string{"1. one", "2. two"}},
 		{"link", "[example](https://example.com)", []string{"[example](https://example.com)"}},
-		{"horizontal rule", "before\n\n---\n\nafter", []string{"* * *"}},
+		{"horizontal rule", "before\n\n---\n\nafter", []string{"---"}},
 		{"blockquote", "> quoted", []string{"> quoted"}},
 	}
 
@@ -125,9 +125,9 @@ func TestParseMarkdownPreservesParagraphsAndBreaks(t *testing.T) {
 			contains: []string{"First paragraph.\n\nSecond paragraph.\n\nThird."},
 		},
 		{
-			name:     "md hard break preserved as <br>",
+			name:     "md hard break preserved verbatim",
 			input:    "Line one  \nLine two\n\nNew para.",
-			contains: []string{"Line one<br>", "Line two", "New para."},
+			contains: []string{"Line one  \nLine two", "New para."},
 			excludes: []string{"Line one\n\nLine two"},
 		},
 		{
@@ -376,6 +376,42 @@ func TestParseMarkdownPreservesTemplatesVerbatim(t *testing.T) {
 			}
 			if strings.Contains(out, "@@@") {
 				t.Errorf("placeholder leaked into output\ngot: %s", out)
+			}
+		})
+	}
+}
+
+func TestParseMarkdownPassesThroughVerbatim(t *testing.T) {
+	mgr := newTestManager()
+	// Markdown content outside of HTML tags must survive the parser
+	// untouched. No emphasis-delimiter substitution, no backslash escapes
+	// added, no whitespace reflowing, no entity encoding.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"inline math", "Energy is $E = mc^2$ at rest.", "$E = mc^2$"},
+		{"subscript math", "Solve for $x_1$ and $x_2$.", "$x_1$"},
+		{"display math", "Display:\n\n$$\\sum_{i=1}^{n} a_i$$\n\nDone.", "$$\\sum_{i=1}^{n} a_i$$"},
+		{"math with asterisk", "Product: $a*b*c$ done.", "$a*b*c$"},
+		{"backslash escape", `Cost is \$5 today.`, `\$5`},
+		{"escaped underscore", `Use foo\_bar here.`, `foo\_bar`},
+		{"asterisk italic verbatim", "This is *italic* not _italic_.", "*italic*"},
+		{"underscore italic verbatim", "This is _italic_ not *italic*.", "_italic_"},
+		{"hr verbatim", "before\n\n---\n\nafter", "---"},
+		{"hr alt syntax verbatim", "before\n\n***\n\nafter", "***"},
+		{"hard break verbatim", "Line one  \nLine two", "Line one  \nLine two"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := mgr.parseMarkdown(tt.input)
+			if err != nil {
+				t.Fatalf("parseMarkdown error: %s", err)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("output missing %q\ngot: %q", tt.want, out)
 			}
 		})
 	}
