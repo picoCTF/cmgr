@@ -163,6 +163,19 @@ prepended with a `CMGR_` prefix automatically before being injected into the con
 In multi-container challenges, the `user_id` and all `env` variables are propagated
 equally to **every** container in the build — there is no per-container filtering.
 
+**Note:** When a build is rebuilt, its on-demand instances (those launched via
+`POST /builds/<id>`) are torn down but **not** restarted, since the original
+`user_id` and `env` payload are not retained. Front-ends that automate rebuilds
+must re-issue `POST /builds/<id>` with the appropriate runtime configuration to
+bring those instances back up. Persistent (schema-managed) instances are
+restarted automatically as before.
+
+**Note:** Runtime env injection (`user_id` / `env`) is currently only exposed
+through the `cmgrd` REST API. The `cmgr` CLI commands (`start`, `playtest`,
+etc.) always launch instances with no injected env, so challenges that depend
+on `CMGR_USER_ID` or other runtime variables will not behave identically under
+the CLI as they do in production. (TODO: surface these as CLI flags if needed.)
+
 ### Back-End
 
 If you're interested in contributing, modifying, or extending **cmgr**, the
