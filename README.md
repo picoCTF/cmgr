@@ -36,7 +36,7 @@ tar xzvf ../cmgr_`uname -s | tr '[:upper:]' '[:lower:]'`_amd64.tar.gz
 CMGR_LOGGING=info ./cmgr test --require-solve
 ```
 
-**NOTE:** If you are running this on an ARM-based computer, you will need to change `amd64` in the cmgr tarball to `arm64`.
+**NOTE:** Published binaries cover `linux_amd64` and `darwin_arm64` (Apple Silicon). On Apple Silicon, change `amd64` to `arm64` in the cmgr tarball URL. Intel Mac and Linux ARM builds are not published — build from source for those platforms (see [Back-End](#back-end)).
 
 At this point, you can start checking out problems by finding the challenge ID
 of one you would like to play and running `./cmgr playtest <challenge>`.  This
