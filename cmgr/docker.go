@@ -60,6 +60,16 @@ func (m *Manager) initDocker() error {
 
 	m.log.infof("connected to docker (API v%s)", ping.APIVersion)
 
+	// OSType is immutable for the daemon's lifetime and is only used to decide
+	// whether to apply the linux seccomp profile. Fetch it once here so the hot
+	// launch and solve paths never have to call the (heavy) Info endpoint.
+	info, err := cli.Info(m.ctx, client.InfoOptions{})
+	if err != nil {
+		m.log.errorf("could not query docker engine info: %s", err)
+		return err
+	}
+	m.hostOSType = info.Info.OSType
+
 	concurrencyLimit := 2
 	if envStr, isSet := os.LookupEnv("CMGR_CONCURRENT_LAUNCHES"); isSet {
 		if parsed, err := strconv.Atoi(envStr); err == nil && (parsed == 1 || parsed == 2) {
@@ -423,12 +433,7 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	hConfig := container.HostConfig{}
 	nConfig := network.NetworkingConfig{}
 
-	hostInfo, err := m.cli.Info(m.ctx, client.InfoOptions{})
-	if err != nil {
-		return err
-	}
-
-	if hostInfo.Info.OSType == "linux" {
+	if m.hostOSType == "linux" {
 		m.log.debug("inserting custom seccomp profile")
 		hConfig.SecurityOpt = []string{"seccomp:" + seccompPolicy}
 	}
@@ -615,6 +620,27 @@ func (m *Manager) stopNetwork(instance *InstanceMetadata) error {
 	return err
 }
 
+// portsAlreadyKnown reports whether every published port for an image already has
+// a non-zero host port reserved in ports, so the post-start read-back in
+// startContainers can be safely skipped. It is false when explicit ports are
+// disabled (portLow == 0, Docker assigns ephemeral ports) or when any required
+// port is unassigned — e.g. the rebuild flow, which clears instance.Ports before
+// restarting and so must read the bound port back. A port whose name is missing
+// from revPortMap is treated as unknown (false): without a resolvable name we
+// cannot confirm its reservation, and must not skip the read-back.
+func portsAlreadyKnown(portLow int, imagePorts []string, ports map[string]int, revPortMap map[string]string) bool {
+	if portLow == 0 {
+		return false
+	}
+	for _, portStr := range imagePorts {
+		name, ok := revPortMap[portStr]
+		if !ok || name == "" || ports[name] == 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetadata, opts map[string]ContainerOptions, envVars map[string]string, revPortMap map[string]string) error {
 	m.launchSemaphore <- struct{}{}
 	defer func() { <-m.launchSemaphore }()
@@ -745,12 +771,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			}
 		}
 
-		hostInfo, err := m.cli.Info(m.ctx, client.InfoOptions{})
-		if err != nil {
-			return err
-		}
-
-		if hostInfo.Info.OSType == "linux" {
+		if m.hostOSType == "linux" {
 			if hasContainerOpts && cOpts.CapImmutable {
 				hConfig.CapAdd = append(hConfig.CapAdd, "LINUX_IMMUTABLE")
 			}
@@ -787,38 +808,55 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 			return err
 		}
 
-		backoff := time.Millisecond
-		done := false
-		for !done && backoff < time.Second {
-			m.log.debug("Querying docker for port info...")
+		// When the port mapping is already known (explicit ports that were reserved
+		// and bound before ContainerCreate), instance.Ports already holds the correct
+		// values and a successful ContainerStart guarantees the port is bound. The
+		// inspect/backoff loop below could only re-read the value we already set (and
+		// would needlessly eat backoff sleeps while networking settles), so skip it.
+		// It is still needed when the mapping is not yet known: Docker-assigned
+		// ephemeral ports, or an explicit-port path entered with instance.Ports
+		// cleared (e.g. rebuild), where the bound port must be read back.
+		if !portsAlreadyKnown(m.portLow, image.Ports, instance.Ports, revPortMap) {
+			backoff := time.Millisecond
+			done := false
+			for !done && backoff < time.Second {
+				m.log.debug("Querying docker for port info...")
 
-			cInfo, err := m.cli.ContainerInspect(m.ctx, cid, client.ContainerInspectOptions{})
-			if err != nil {
-				m.log.errorf("failed to get container info: %s", err)
-				return err
-			}
-			if cInfo.Container.NetworkSettings == nil {
-				done = false
-				time.Sleep(backoff)
-				backoff = 2 * backoff
-				continue
-			}
-
-			done = true
-			for cPort, hPortInfo := range cInfo.Container.NetworkSettings.Ports {
-				if len(hPortInfo) == 0 {
+				cInfo, err := m.cli.ContainerInspect(m.ctx, cid, client.ContainerInspectOptions{})
+				if err != nil {
+					m.log.errorf("failed to get container info: %s", err)
+					return err
+				}
+				if cInfo.Container.NetworkSettings == nil {
 					done = false
 					time.Sleep(backoff)
 					backoff = 2 * backoff
-					break
+					continue
 				}
 
-				hPort, err := strconv.Atoi(string(hPortInfo[0].HostPort))
-				if err != nil {
-					return err
+				done = true
+				for cPort, hPortInfo := range cInfo.Container.NetworkSettings.Ports {
+					if len(hPortInfo) == 0 {
+						done = false
+						time.Sleep(backoff)
+						backoff = 2 * backoff
+						break
+					}
+
+					hPort, err := strconv.Atoi(string(hPortInfo[0].HostPort))
+					if err != nil {
+						return err
+					}
+					name, ok := revPortMap[cPort.String()]
+					if !ok {
+						// No reverse-map entry: writing under "" would drop the real
+						// mapping (and clobber other unmapped ports). Skip it instead.
+						m.log.warnf("ignoring container port %s with no reverse-port-map entry", cPort)
+						continue
+					}
+					instance.Ports[name] = hPort
+					m.log.debugf("container port %s mapped to %s", cPort, hPortInfo[0].HostPort)
 				}
-				instance.Ports[revPortMap[cPort.String()]] = hPort
-				m.log.debugf("container port %s mapped to %s", cPort, hPortInfo[0].HostPort)
 			}
 		}
 	}

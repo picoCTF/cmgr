@@ -831,6 +831,164 @@ func TestDatabasePortOperations(t *testing.T) {
 	}
 }
 
+// TestExplicitPortReadbackRedundant verifies the invariant that makes the
+// post-start port read-back loop in startContainers safe to skip when CMGR_PORTS
+// is set (m.portLow != 0). By the time startContainers runs, the explicit-port
+// reservation loop in newInstance has already populated instance.Ports — for
+// every exposed image port — with exactly the host port that Docker will bind.
+// The read-back loop's only effect is
+//
+//	instance.Ports[revPortMap[cPort.String()]] = hPort
+//
+// which writes the SAME key (cPort.String() yields the same "<port>/tcp" form
+// that getReversePortMap keys on and that startContainers builds its image port
+// list with) and the SAME value (an explicit bind binds exactly the reserved
+// port). So skipping it loses nothing. This mirrors the reservation flow rather
+// than driving Docker, in keeping with the launch-path tests in
+// concurrency_test.go.
+func TestExplicitPortReadbackRedundant(t *testing.T) {
+	const portLow = 41000
+	const portHigh = 41010
+
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+	mgr.portLow = portLow
+	mgr.portHigh = portHigh
+
+	challenge := &ChallengeMetadata{
+		Id:            "test/readback",
+		Name:          "Readback",
+		Namespace:     "test",
+		ChallengeType: "custom",
+		Description:   "Testing explicit-port read-back invariant",
+		Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+		PortMap: map[string]PortInfo{
+			"http": {Host: "challenge", Port: 8080},
+			"ssh":  {Host: "challenge", Port: 22},
+		},
+		Tags:       []string{},
+		Attributes: map[string]string{},
+		Path:       "/tmp/test/problem.md",
+		ChallengeOptions: ChallengeOptions{
+			Overrides: map[string]ContainerOptions{"": {}},
+		},
+	}
+	if errs := mgr.addChallenges([]*ChallengeMetadata{challenge}); len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
+	build := &BuildMetadata{
+		Seed:          1,
+		Format:        "flag{%s}",
+		Challenge:     "test/readback",
+		Schema:        "manual-test",
+		InstanceCount: DYNAMIC_INSTANCES,
+	}
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("openBuild failed: %s", err)
+	}
+	build.Flag = "flag{readback}"
+	// "<port>/tcp" is exactly the form startContainers builds its image port
+	// list with, and that cPort.String() would yield in the skipped read-back loop.
+	build.Images = []Image{{Host: "challenge", Ports: []string{"8080/tcp", "22/tcp"}}}
+	build.LookupData = map[string]string{}
+	if err := mgr.finalizeBuild(build); err != nil {
+		t.Fatalf("finalizeBuild failed: %s", err)
+	}
+
+	revPortMap, err := mgr.getReversePortMap(build.Challenge)
+	if err != nil {
+		t.Fatalf("getReversePortMap failed: %s", err)
+	}
+
+	instance := &InstanceMetadata{Build: build.Id, Ports: map[string]int{}, Containers: []string{}}
+	if err := mgr.openInstance(instance); err != nil {
+		t.Fatalf("openInstance failed: %s", err)
+	}
+
+	// Mirror the explicit-port reservation loop in newInstance, which runs
+	// BEFORE startContainers.
+	for _, image := range build.Images {
+		if image.Host == "builder" {
+			continue
+		}
+		for _, portStr := range image.Ports {
+			portName := revPortMap[portStr]
+			hostPort, err := mgr.reservePort(instance.Id, portName)
+			if err != nil {
+				t.Fatalf("reservePort(%q) failed: %s", portName, err)
+			}
+			instance.Ports[portName] = hostPort
+		}
+	}
+
+	// Invariant 1: every exposed port is bound to a valid in-range reservation
+	// that startContainers will publish (it reads instance.Ports[revPortMap[portStr]]).
+	// If any were missing, the read-back would be needed and the skip unsafe.
+	for _, portStr := range build.Images[0].Ports {
+		name := revPortMap[portStr]
+		if name == "" {
+			t.Fatalf("no reverse-port-map entry for exposed port %q", portStr)
+		}
+		got := instance.Ports[name]
+		if got < portLow || got > portHigh {
+			t.Errorf("port %s (%s): reserved host port %d outside range [%d,%d]", portStr, name, got, portLow, portHigh)
+		}
+	}
+
+	// Sanity: both ports present and distinct.
+	if len(instance.Ports) != 2 {
+		t.Errorf("expected 2 reserved ports, got %d: %v", len(instance.Ports), instance.Ports)
+	}
+	if instance.Ports["http"] == instance.Ports["ssh"] {
+		t.Errorf("expected distinct ports for http and ssh, both = %d", instance.Ports["http"])
+	}
+
+	// Invariant 2: the gate startContainers uses agrees that this real
+	// reservation-flow state is "known", so the read-back is skipped. (The gate's
+	// edge cases — ephemeral ports, cleared/rebuild, missing entries — are covered
+	// by TestPortsAlreadyKnown.)
+	if !portsAlreadyKnown(mgr.portLow, build.Images[0].Ports, instance.Ports, revPortMap) {
+		t.Error("portsAlreadyKnown = false with all ports reserved; read-back would not be skipped")
+	}
+}
+
+// TestPortsAlreadyKnown covers the gate that decides whether startContainers can
+// skip the post-start port read-back, including the edge cases that the
+// reservation-flow test above cannot exercise directly.
+func TestPortsAlreadyKnown(t *testing.T) {
+	revPortMap := map[string]string{"8080/tcp": "http", "22/tcp": "ssh"}
+	imagePorts := []string{"8080/tcp", "22/tcp"}
+
+	tests := []struct {
+		name      string
+		portLow   int
+		imgPorts  []string
+		ports     map[string]int
+		wantKnown bool
+	}{
+		{"explicit all reserved", 30000, imagePorts, map[string]int{"http": 30001, "ssh": 30002}, true},
+		{"ephemeral ports (portLow==0)", 0, imagePorts, map[string]int{"http": 30001, "ssh": 30002}, false},
+		{"explicit but ports cleared (rebuild)", 30000, imagePorts, map[string]int{}, false},
+		{"explicit but one port missing", 30000, imagePorts, map[string]int{"http": 30001}, false},
+		{"explicit but a port is zero", 30000, imagePorts, map[string]int{"http": 30001, "ssh": 0}, false},
+		{"no published ports", 30000, []string{}, map[string]int{}, true},
+		// A port missing from the reverse map resolves to name "". Even if a
+		// non-zero port happens to sit under the "" key, the mapping is not known,
+		// so the read-back must not be skipped.
+		{"port missing from reverse map", 30000, []string{"9999/tcp"}, map[string]int{"": 30005}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := portsAlreadyKnown(tc.portLow, tc.imgPorts, tc.ports, revPortMap)
+			if got != tc.wantKnown {
+				t.Errorf("portsAlreadyKnown() = %v, want %v", got, tc.wantKnown)
+			}
+		})
+	}
+}
+
 // setupPortAssignments is a helper that creates a challenge, build, and instance
 // with the given ports assigned in the database, and returns the manager.
 // portLow and portHigh configure the manager's port range for bitset tests.
