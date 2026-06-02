@@ -48,6 +48,7 @@ type Manager struct {
 	challengeInterface   string
 	challengeRegistry    string
 	authString           string
+	hostOSType           string // docker daemon OSType, cached once at initDocker (immutable for the daemon)
 	portLow              int
 	portHigh             int
 	lastPruneUnix        atomic.Int64 // atomic UnixNano timestamp used as CAS gate for prune interval
