@@ -1,11 +1,14 @@
 package cmgr
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math/rand"
 	"os"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -232,38 +235,51 @@ func (m *Manager) initDatabase() error {
 		}
 	}
 
-	var colCount int
-	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = 'created_at';").Scan(&colCount)
+	// Bring an older `instances` table up to the current schema. created_at
+	// (DEFAULT CURRENT_TIMESTAMP) and is_finalized were both added after the
+	// original release. SQLite cannot ALTER ... ADD COLUMN a non-constant
+	// default such as CURRENT_TIMESTAMP, so any DB missing either column is
+	// migrated by rebuilding the table to match the canonical schema exactly.
+	var createdAtCols, isFinalizedCols int
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = 'created_at';").Scan(&createdAtCols)
 	if err != nil {
 		m.log.errorf("could not check instances table schema: %s", err)
 		return err
 	}
-	if colCount == 0 {
-		_, err = db.Exec("ALTER TABLE instances ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP;")
+	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = 'is_finalized';").Scan(&isFinalizedCols)
+	if err != nil {
+		m.log.errorf("could not check instances table schema for is_finalized: %s", err)
+		return err
+	}
+
+	// A pre-rebuild migration added is_finalized via ALTER ... DEFAULT 1, so on
+	// those upgraded DBs openInstance (which omits is_finalized) creates rows
+	// that are born finalized — the unfinalized-launch GC then never reclaims a
+	// crashed launch. The canonical schema uses DEFAULT 0, so a non-zero default
+	// also triggers a rebuild to restore it.
+	var isFinalizedDefault sql.NullString
+	if isFinalizedCols > 0 {
+		err = db.QueryRow("SELECT dflt_value FROM pragma_table_info('instances') WHERE name = 'is_finalized';").Scan(&isFinalizedDefault)
 		if err != nil {
+			m.log.errorf("could not check instances.is_finalized default: %s", err)
+			return err
+		}
+	}
+	staleIsFinalizedDefault := isFinalizedCols > 0 && isFinalizedDefault.String != "0"
+
+	if createdAtCols == 0 || isFinalizedCols == 0 || staleIsFinalizedDefault {
+		if err = rebuildInstancesTable(db, createdAtCols > 0, isFinalizedCols > 0); err != nil {
 			m.log.errorf("could not migrate instances table: %s", err)
 			return err
 		}
 	}
 
+	// instanceCreatedAtIndex is created here rather than in schemaQuery, so it
+	// must be ensured for fresh databases too (the rebuild path recreates it).
 	_, err = db.Exec("CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);")
 	if err != nil {
 		m.log.errorf("could not create instanceCreatedAtIndex index: %s", err)
 		return err
-	}
-
-	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = 'is_finalized';").Scan(&colCount)
-	if err != nil {
-		m.log.errorf("could not check instances table schema for is_finalized: %s", err)
-		return err
-	}
-	if colCount == 0 {
-		// Default to 1 for existing instances, as they were successfully launched
-		_, err = db.Exec("ALTER TABLE instances ADD COLUMN is_finalized INTEGER NOT NULL DEFAULT 1 CHECK(is_finalized IN (0,1));")
-		if err != nil {
-			m.log.errorf("could not migrate instances table for is_finalized: %s", err)
-			return err
-		}
 	}
 
 	var fkeysEnforced bool
@@ -287,6 +303,134 @@ func (m *Manager) initDatabase() error {
 	}
 
 	return nil
+}
+
+// rebuildInstancesTable recreates the `instances` table with the canonical
+// schema and copies existing rows across. It migrates databases that predate
+// the created_at and/or is_finalized columns, which cannot simply be added via
+// ALTER TABLE ... ADD COLUMN because created_at's DEFAULT CURRENT_TIMESTAMP is a
+// non-constant default that SQLite rejects in ADD COLUMN.
+//
+// `instances` is the target of ON DELETE CASCADE foreign keys (portAssignments,
+// containers), so the implicit DELETE that DROP TABLE performs would cascade and
+// destroy those rows if foreign keys were enforced. The rebuild therefore runs
+// with foreign_keys disabled. Because that pragma is per-connection and cannot
+// change inside a transaction, the whole operation is pinned to a single
+// connection: disable FKs, rebuild in a transaction, verify integrity with
+// foreign_key_check, commit, then re-enable FKs.
+func rebuildInstancesTable(db *sqlx.DB, hasCreatedAt, hasIsFinalized bool) (retErr error) {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err = conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF;"); err != nil {
+		return err
+	}
+	// Restore enforcement before the connection returns to the pool (LIFO: runs
+	// before conn.Close). go-sqlite3 sets _fk only at open, not on checkout, so
+	// a connection left with foreign_keys=OFF would silently skip enforcement on
+	// reuse. Surface a re-enable failure so initDatabase aborts instead.
+	defer func() {
+		if _, e := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON;"); e != nil && retErr == nil {
+			retErr = fmt.Errorf("could not re-enable foreign keys after rebuilding instances table: %w", e)
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	const createNew = `CREATE TABLE instances_migrate_new (
+		id INTEGER PRIMARY KEY,
+		lastsolved INTEGER,
+		build INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_finalized INTEGER NOT NULL DEFAULT 0 CHECK(is_finalized IN (0,1)),
+		FOREIGN KEY (build) REFERENCES builds (id)
+			ON UPDATE RESTRICT ON DELETE RESTRICT
+	);`
+	if _, err = tx.ExecContext(ctx, createNew); err != nil {
+		return err
+	}
+
+	// Synthesize values only for columns the old table lacks: backfill a missing
+	// created_at to now, and treat legacy instances as finalized (they were
+	// already launched), matching the semantics of the original incremental
+	// migration. When created_at already exists, copy it verbatim — preserving
+	// NULL, which the rest of the code treats as a valid "unknown" timestamp
+	// rather than rewriting it to now.
+	createdExpr := "CURRENT_TIMESTAMP"
+	if hasCreatedAt {
+		createdExpr = "created_at"
+	}
+	finalizedExpr := "1"
+	if hasIsFinalized {
+		finalizedExpr = "is_finalized"
+	}
+	copyStmt := fmt.Sprintf(
+		"INSERT INTO instances_migrate_new (id, lastsolved, build, created_at, is_finalized) "+
+			"SELECT id, lastsolved, build, %s, %s FROM instances;",
+		createdExpr, finalizedExpr,
+	)
+	if _, err = tx.ExecContext(ctx, copyStmt); err != nil {
+		return err
+	}
+
+	if _, err = tx.ExecContext(ctx, "DROP TABLE instances;"); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "ALTER TABLE instances_migrate_new RENAME TO instances;"); err != nil {
+		return err
+	}
+
+	// Recreate the indexes that were dropped along with the old table.
+	if _, err = tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS instanceBuildIndex ON instances(build);"); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS instanceCreatedAtIndex ON instances(created_at);"); err != nil {
+		return err
+	}
+
+	// Confirm the rebuild left no dangling foreign-key references before
+	// committing (rows were copied with enforcement off).
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check;")
+	if err != nil {
+		return err
+	}
+	var violation string
+	if rows.Next() {
+		// foreign_key_check yields: table, rowid, parent (referenced table), fkid.
+		var (
+			table  string
+			rowid  sql.NullInt64
+			parent string
+			fkid   int
+		)
+		if err = rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			rows.Close()
+			return err
+		}
+		rowidStr := "NULL"
+		if rowid.Valid {
+			rowidStr = strconv.FormatInt(rowid.Int64, 10)
+		}
+		violation = fmt.Sprintf("row %s in %q references a missing row in %q (fk %d)", rowidStr, table, parent, fkid)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if violation != "" {
+		return fmt.Errorf("foreign key check failed after rebuilding instances table: %s", violation)
+	}
+
+	return tx.Commit()
 }
 
 func (m *Manager) getReversePortMap(id ChallengeId) (map[string]string, error) {

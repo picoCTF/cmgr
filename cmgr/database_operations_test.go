@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // TestDatabaseChallengeRoundTrip tests adding, looking up, and removing challenges
@@ -1496,6 +1498,14 @@ func TestLookupBuildInstances(t *testing.T) {
 	})
 }
 
+// removeDBFiles deletes a SQLite database file along with the -wal and -shm
+// sidecar files that WAL mode can leave behind, so tests don't leak temp files.
+func removeDBFiles(path string) {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		os.Remove(path + suffix)
+	}
+}
+
 // setupTestManager creates a Manager with a temporary on-disk database file for testing
 func setupTestManager(t *testing.T) *Manager {
 	t.Helper()
@@ -1505,9 +1515,7 @@ func setupTestManager(t *testing.T) *Manager {
 		t.Fatalf("failed to create temp file: %s", err)
 	}
 	dbFile.Close()
-	t.Cleanup(func() {
-		os.Remove(dbFile.Name())
-	})
+	t.Cleanup(func() { removeDBFiles(dbFile.Name()) })
 
 	mgr := new(Manager)
 	mgr.log = newLogger(DISABLED)
@@ -1520,4 +1528,266 @@ func setupTestManager(t *testing.T) *Manager {
 	}
 
 	return mgr
+}
+
+// openLegacyInstancesDB creates a temp database whose `instances` table omits
+// the created_at and/or is_finalized columns, simulating a schema from before
+// those columns existed. It also creates the portAssignments and containers
+// tables (which hold ON DELETE CASCADE foreign keys into instances) and seeds a
+// build, an instance, and one dependent row in each, so a rebuild's foreign-key
+// safety can be verified.
+func openLegacyInstancesDB(t *testing.T, withCreatedAt, withIsFinalized bool) *sqlx.DB {
+	t.Helper()
+
+	dbFile, err := os.CreateTemp("", "cmgr-migrate-*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %s", err)
+	}
+	dbFile.Close()
+	t.Cleanup(func() { removeDBFiles(dbFile.Name()) })
+
+	dsn := dbFile.Name() + "?_fk=true&_journal_mode=WAL&_busy_timeout=50&_synchronous=NORMAL"
+	db, err := sqlx.Open("sqlite3", dsn)
+	if err != nil {
+		t.Fatalf("failed to open db: %s", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	instanceCols := "id INTEGER PRIMARY KEY, lastsolved INTEGER, build INTEGER NOT NULL"
+	if withCreatedAt {
+		instanceCols += ", created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+	}
+	if withIsFinalized {
+		instanceCols += ", is_finalized INTEGER NOT NULL DEFAULT 0 CHECK(is_finalized IN (0,1))"
+	}
+
+	schema := `
+	CREATE TABLE builds (id INTEGER PRIMARY KEY);
+	CREATE TABLE instances (
+		` + instanceCols + `,
+		FOREIGN KEY (build) REFERENCES builds (id) ON UPDATE RESTRICT ON DELETE RESTRICT
+	);
+	CREATE INDEX instanceBuildIndex ON instances(build);
+	CREATE TABLE portAssignments (
+		instance INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		port INTEGER NOT NULL,
+		FOREIGN KEY (instance) REFERENCES instances (id) ON UPDATE RESTRICT ON DELETE CASCADE
+	);
+	CREATE TABLE containers (
+		instance INTEGER NOT NULL,
+		id TEXT NOT NULL PRIMARY KEY,
+		FOREIGN KEY (instance) REFERENCES instances (id) ON UPDATE RESTRICT ON DELETE CASCADE
+	);`
+	if withCreatedAt {
+		schema += "\n\tCREATE INDEX instanceCreatedAtIndex ON instances(created_at);"
+	}
+	if _, err := db.Exec(schema); err != nil {
+		t.Fatalf("failed to create legacy schema: %s", err)
+	}
+
+	seed := []string{
+		"INSERT INTO builds(id) VALUES (1);",
+		// created_at/is_finalized fall back to column defaults where present.
+		"INSERT INTO instances(id, lastsolved, build) VALUES (1, 0, 1);",
+		"INSERT INTO portAssignments(instance, name, port) VALUES (1, 'challenge', 12345);",
+		"INSERT INTO containers(instance, id) VALUES (1, 'deadbeefcafe');",
+	}
+	for _, stmt := range seed {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("seed failed (%q): %s", stmt, err)
+		}
+	}
+
+	return db
+}
+
+// TestRebuildInstancesTableMigration exercises the legacy-database migration
+// path directly: it rebuilds an old `instances` table to the current schema and
+// verifies the rows survive (including FK-dependent rows that ON DELETE CASCADE
+// would otherwise destroy), the new columns are populated with the correct
+// legacy semantics, and the restored DEFAULT CURRENT_TIMESTAMP works.
+func TestRebuildInstancesTableMigration(t *testing.T) {
+	cases := []struct {
+		name           string
+		hasCreatedAt   bool
+		hasIsFinalized bool
+	}{
+		{"legacy v1.2.0 (neither column)", false, false},
+		{"created_at only (pre-is_finalized)", true, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openLegacyInstancesDB(t, tc.hasCreatedAt, tc.hasIsFinalized)
+
+			// When created_at already exists, a row may legitimately hold NULL
+			// (an "unknown" timestamp). The rebuild must copy it verbatim, not
+			// rewrite it to now.
+			if tc.hasCreatedAt {
+				if _, err := db.Exec("INSERT INTO instances(id, lastsolved, build, created_at) VALUES (3, 0, 1, NULL);"); err != nil {
+					t.Fatalf("seed NULL created_at instance: %s", err)
+				}
+			}
+
+			if err := rebuildInstancesTable(db, tc.hasCreatedAt, tc.hasIsFinalized); err != nil {
+				t.Fatalf("rebuildInstancesTable failed: %s", err)
+			}
+
+			// Both columns must exist after the rebuild.
+			for _, col := range []string{"created_at", "is_finalized"} {
+				var n int
+				if err := db.Get(&n, "SELECT COUNT(*) FROM pragma_table_info('instances') WHERE name = ?;", col); err != nil {
+					t.Fatalf("schema check for %s: %s", col, err)
+				}
+				if n != 1 {
+					t.Errorf("expected column %s to exist after migration", col)
+				}
+			}
+
+			// The instance row, and crucially its FK-dependent rows, must survive.
+			// If the rebuild ran with foreign keys enforced, DROP TABLE's implicit
+			// DELETE would have cascaded and wiped these.
+			for _, check := range []struct {
+				what  string
+				query string
+			}{
+				{"instance", "SELECT COUNT(*) FROM instances WHERE id = 1;"},
+				{"portAssignment", "SELECT COUNT(*) FROM portAssignments WHERE instance = 1;"},
+				{"container", "SELECT COUNT(*) FROM containers WHERE instance = 1;"},
+			} {
+				var n int
+				if err := db.Get(&n, check.query); err != nil {
+					t.Fatalf("%s count: %s", check.what, err)
+				}
+				if n != 1 {
+					t.Errorf("expected %s row to survive rebuild, found %d", check.what, n)
+				}
+			}
+
+			// Legacy rows are treated as finalized and get a backfilled timestamp.
+			var isFinalized int
+			var createdAt *time.Time
+			if err := db.QueryRow("SELECT is_finalized, created_at FROM instances WHERE id = 1;").Scan(&isFinalized, &createdAt); err != nil {
+				t.Fatalf("read migrated row: %s", err)
+			}
+			if isFinalized != 1 {
+				t.Errorf("expected legacy instance is_finalized=1, got %d", isFinalized)
+			}
+			if createdAt == nil {
+				t.Error("expected backfilled created_at, got NULL")
+			}
+
+			// The DEFAULT CURRENT_TIMESTAMP must be restored: an insert omitting
+			// created_at should still populate it.
+			if _, err := db.Exec("INSERT INTO instances(id, lastsolved, build) VALUES (2, 0, 1);"); err != nil {
+				t.Fatalf("insert new instance: %s", err)
+			}
+			var newCreatedAt *time.Time
+			if err := db.QueryRow("SELECT created_at FROM instances WHERE id = 2;").Scan(&newCreatedAt); err != nil {
+				t.Fatalf("read new row: %s", err)
+			}
+			if newCreatedAt == nil {
+				t.Error("expected restored DEFAULT CURRENT_TIMESTAMP to populate created_at on insert")
+			}
+
+			// A pre-existing NULL created_at must be preserved, not backfilled.
+			if tc.hasCreatedAt {
+				var preserved *time.Time
+				if err := db.QueryRow("SELECT created_at FROM instances WHERE id = 3;").Scan(&preserved); err != nil {
+					t.Fatalf("read preserved-NULL row: %s", err)
+				}
+				if preserved != nil {
+					t.Errorf("expected NULL created_at to survive rebuild as NULL, got %v", preserved)
+				}
+			}
+
+			// Foreign-key enforcement must still hold after the rebuild: a
+			// reference to a nonexistent instance should be rejected.
+			if _, err := db.Exec("INSERT INTO portAssignments(instance, name, port) VALUES (999, 'ghost', 23456);"); err == nil {
+				t.Error("expected foreign key violation after rebuild, insert succeeded")
+			}
+		})
+	}
+}
+
+// TestInitDatabaseRepairsStaleIsFinalizedDefault drives initDatabase against a
+// database in the buggy intermediate state: created_at and is_finalized both
+// exist, but is_finalized was added by the old ALTER ... DEFAULT 1 migration.
+// Because both columns are present, a column-existence-only trigger would skip
+// the rebuild and leave new instances born finalized (so the unfinalized-launch
+// GC never reclaims a crash). The migration must detect the non-canonical
+// default, rebuild to DEFAULT 0, preserve existing rows, and make newly opened
+// instances unfinalized.
+func TestInitDatabaseRepairsStaleIsFinalizedDefault(t *testing.T) {
+	dbFile, err := os.CreateTemp("", "cmgr-finalized-*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %s", err)
+	}
+	dbFile.Close()
+	t.Cleanup(func() { removeDBFiles(dbFile.Name()) })
+
+	dsn := dbFile.Name() + "?_fk=true&_journal_mode=WAL&_busy_timeout=50&_synchronous=NORMAL"
+	seed, err := sqlx.Open("sqlite3", dsn)
+	if err != nil {
+		t.Fatalf("failed to open seed db: %s", err)
+	}
+	// Mirror the pre-rebuild schema: created_at present, is_finalized added with
+	// the legacy DEFAULT 1. Seed one already-launched instance (default 1).
+	legacy := `
+	CREATE TABLE builds (id INTEGER PRIMARY KEY, schema TEXT);
+	CREATE TABLE instances (
+		id INTEGER PRIMARY KEY,
+		lastsolved INTEGER,
+		build INTEGER NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		is_finalized INTEGER NOT NULL DEFAULT 1 CHECK(is_finalized IN (0,1)),
+		FOREIGN KEY (build) REFERENCES builds (id) ON UPDATE RESTRICT ON DELETE RESTRICT
+	);
+	INSERT INTO builds(id) VALUES (1);
+	INSERT INTO instances(id, lastsolved, build) VALUES (1, 0, 1);`
+	if _, err := seed.Exec(legacy); err != nil {
+		t.Fatalf("failed to seed legacy schema: %s", err)
+	}
+	seed.Close()
+
+	mgr := new(Manager)
+	mgr.log = newLogger(DISABLED)
+	os.Setenv(DB_ENV, dbFile.Name())
+	defer os.Unsetenv(DB_ENV)
+	if err := mgr.initDatabase(); err != nil {
+		t.Fatalf("initDatabase failed: %s", err)
+	}
+	defer mgr.db.Close()
+
+	// The default must have been normalized to the canonical 0.
+	var dflt string
+	if err := mgr.db.QueryRow("SELECT dflt_value FROM pragma_table_info('instances') WHERE name = 'is_finalized';").Scan(&dflt); err != nil {
+		t.Fatalf("read is_finalized default: %s", err)
+	}
+	if dflt != "0" {
+		t.Errorf("expected is_finalized DEFAULT 0 after migration, got %q", dflt)
+	}
+
+	// The pre-existing launched instance must survive with is_finalized=1.
+	var existing int
+	if err := mgr.db.QueryRow("SELECT is_finalized FROM instances WHERE id = 1;").Scan(&existing); err != nil {
+		t.Fatalf("read existing instance: %s", err)
+	}
+	if existing != 1 {
+		t.Errorf("expected existing instance to keep is_finalized=1, got %d", existing)
+	}
+
+	// A newly opened instance (is_finalized omitted, as openInstance does) must
+	// now be born unfinalized so the GC can reclaim it if the launch crashes.
+	if _, err := mgr.db.Exec("INSERT INTO instances(id, lastsolved, build) VALUES (2, 0, 1);"); err != nil {
+		t.Fatalf("insert new instance: %s", err)
+	}
+	var fresh int
+	if err := mgr.db.QueryRow("SELECT is_finalized FROM instances WHERE id = 2;").Scan(&fresh); err != nil {
+		t.Fatalf("read new instance: %s", err)
+	}
+	if fresh != 0 {
+		t.Errorf("expected new instance to default to is_finalized=0, got %d", fresh)
+	}
 }
