@@ -640,22 +640,53 @@ func (m *Manager) checkPrune() {
 }
 
 func (m *Manager) Prune() error {
+	// Guard the exported method directly: pruneAge <= 0 means pruning is
+	// disabled. Without this, a direct call would compute datetime('now', '-0
+	// seconds') == now and delete essentially every on-demand instance. checkPrune
+	// also short-circuits, but Prune is public and may be called on its own.
+	if m.pruneAge <= 0 {
+		return nil
+	}
+
 	m.log.debugf("pruning on-demand instances older than %s", m.pruneAge)
 
-	// Manual builds start with the manual schema prefix. We want to find
-	// instances associated with these builds that are older than the prune age.
-	// We also prune those with NULL created_at (legacy entries).
+	// On-demand instances belong to builds with instancecount == DYNAMIC_INSTANCES
+	// (-1). Every other instancecount is excluded: fixed-pool builds (a positive
+	// count, maintained by the schema converge loop) and LOCKED builds (-2, a
+	// removed/locked schema) must never be pruned here. Note this selects on
+	// instancecount, not the schema name: schema-defined dynamic challenges keep
+	// their real schema (e.g. "picoctf-2024"), so a name-based filter would miss
+	// them entirely.
+	//
+	// This only clears the database rows (and, via ON DELETE CASCADE, their port
+	// and container assignments). It does not stop containers: by the time this
+	// fires the external cleanup (API/Celery) and docker_reaper have normally
+	// already removed them, so the goal here is to reclaim DB rows and assignable
+	// ports rather than to tear down live Docker resources. We also prune rows with
+	// NULL created_at (legacy entries that predate the column).
+	//
+	// The age check is restricted to finalized instances. Unfinalized rows are
+	// in-progress (or crashed) launches and are owned exclusively by the 5-minute
+	// crash-GC below; without this guard a small pruneAge could delete a launch
+	// that is still mid-flight. Legacy NULL-created_at rows are always finalized,
+	// so pruning them unconditionally is safe.
 	query := `
 		DELETE FROM instances
 		WHERE id IN (
 			SELECT i.id
 			FROM instances AS i
 			JOIN builds AS b ON i.build = b.id
-			WHERE b.schema LIKE ?
-			AND (i.created_at IS NULL OR i.created_at < datetime('now', ?))
+			WHERE b.instancecount = ?
+			AND (i.created_at IS NULL OR (i.is_finalized = 1 AND i.created_at < datetime('now', ?)))
 		);`
 
-	res, err := m.db.Exec(query, manualSchemaPrefix+"%", fmt.Sprintf("-%d seconds", int(m.pruneAge.Seconds())))
+	// Render pruneAge to whole seconds for SQLite's datetime() window, rounding
+	// up: truncating down would prune slightly more aggressively than configured,
+	// and a sub-second pruneAge would truncate to a "-0 seconds" window matching
+	// everything. Ceiling keeps the effective age >= configured and always >= 1s.
+	ageSeconds := int((m.pruneAge + time.Second - time.Nanosecond) / time.Second)
+
+	res, err := m.db.Exec(query, DYNAMIC_INSTANCES, fmt.Sprintf("-%d seconds", ageSeconds))
 	if err != nil {
 		return err
 	}
