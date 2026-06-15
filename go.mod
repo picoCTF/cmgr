@@ -3,7 +3,7 @@ module github.com/picoCTF/cmgr
 go 1.26.0
 
 require (
-	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.1
+	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/cli v29.5.2+incompatible
 	github.com/docker/go-units v0.5.0
@@ -17,7 +17,7 @@ require (
 )
 
 require (
-	github.com/JohannesKaufmann/dom v0.2.0 // indirect
+	github.com/JohannesKaufmann/dom v0.3.1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
