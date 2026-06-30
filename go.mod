@@ -8,7 +8,7 @@ require (
 	github.com/docker/cli v29.6.0+incompatible
 	github.com/docker/go-units v0.5.0
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/mattn/go-sqlite3 v1.14.45
+	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0
 	github.com/yuin/goldmark v1.8.2
