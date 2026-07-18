@@ -51,7 +51,10 @@ func displayChallengeInfo(mgr *cmgr.Manager, args []string) int {
 		path = parser.Arg(0)
 	}
 
-	metalist := getMetaByDir(mgr, path)
+	metalist, ok := getMetaByDir(mgr, path)
+	if !ok {
+		return RUNTIME_ERROR
+	}
 
 	for _, cMeta := range metalist {
 		fmt.Printf("%s\n", cMeta.Id)
@@ -172,13 +175,17 @@ func testChallenges(mgr *cmgr.Manager, args []string) int {
 		return RUNTIME_ERROR
 	}
 
-	metalist := getMetaByDir(mgr, path)
+	metalist, ok := getMetaByDir(mgr, path)
+	if !ok {
+		return RUNTIME_ERROR
+	}
 
 	// With --keep-images, build images are retained during the run so challenges
 	// can share base layers: a per-challenge Destroy prunes the shared base before
 	// the next challenge builds, forcing every challenge to reinstall it. Teardown
-	// is deferred to the end of the batch instead. Instances are still stopped per
-	// challenge inside runTest, so only image layers accumulate during the run.
+	// is deferred to the end of the batch instead. Instances are unaffected --
+	// runTest stops them per challenge when solving (and leaves them running in
+	// interactive --no-solve mode, as before) -- so only image layers accumulate.
 	var built []cmgr.BuildId
 	if *keepImages {
 		defer func() {
@@ -372,7 +379,12 @@ func printChanges(status *cmgr.ChallengeUpdates, verbose bool) {
 	}
 }
 
-func getMetaByDir(m *cmgr.Manager, dir string) []*cmgr.ChallengeMetadata {
+// getMetaByDir returns the unmodified challenges under dir and whether the
+// lookup succeeded. ok is false when errors occurred or the database is out of
+// sync (both already reported to the user); callers must not treat that as an
+// empty-but-successful result. A successful lookup that finds no challenges
+// returns (nil, true).
+func getMetaByDir(m *cmgr.Manager, dir string) ([]*cmgr.ChallengeMetadata, bool) {
 	cu := m.DetectChanges(dir)
 
 	for i, meta := range cu.Unmodified {
@@ -390,16 +402,16 @@ func getMetaByDir(m *cmgr.Manager, dir string) []*cmgr.ChallengeMetadata {
 		for i, err := range cu.Errors {
 			fmt.Printf("    %d) %s\n", i+1, err)
 		}
-		return nil
+		return nil, false
 	}
 
 	if len(cu.Added)+len(cu.Updated)+len(cu.Refreshed)+len(cu.Removed) > 0 {
 		fmt.Println("error: database out of sync with filesystem, run 'update'")
 		printChanges(cu, false)
-		return nil
+		return nil, false
 	}
 
-	return cu.Unmodified
+	return cu.Unmodified, true
 }
 
 func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string, seed int, solve, required, keepImages bool, built *[]cmgr.BuildId) bool {
