@@ -1,4 +1,10 @@
-FROM python:3.12-alpine AS base
+FROM ubuntu:24.04 AS base
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    socat && \
+    rm -rf /var/lib/apt/lists/*
 
 # Every challenge must place files into this directory
 RUN mkdir /challenge
