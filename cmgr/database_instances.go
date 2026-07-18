@@ -245,6 +245,20 @@ const recordBuildSolveQuery = `
 	SET lastsolved = :lastsolved
 	WHERE id = :build AND lastsolved < :lastsolved;`
 
+// Records a solve directly against a build (no instance), used when checking
+// builds that never get a running instance (artifact-only, flag-only). Reuses
+// recordBuildSolveQuery; a single statement needs no transaction.
+func (m *Manager) recordBuildSolve(build *BuildMetadata) error {
+	_, err := m.db.NamedExec(recordBuildSolveQuery, map[string]interface{}{
+		"build":      build.Id,
+		"lastsolved": build.LastSolved,
+	})
+	if err != nil {
+		m.log.errorf("failed to record build solve: %s", err)
+	}
+	return err
+}
+
 func (m *Manager) recordSolve(instance *InstanceMetadata) error {
 	txn := m.db.MustBegin()
 	_, err := txn.NamedExec(recordInstanceSolveQuery, instance)

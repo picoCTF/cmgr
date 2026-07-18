@@ -19,6 +19,9 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// runSolver builds and runs the challenge's solver against a running instance,
+// attaching the solver to that instance's network, and records the solve on
+// success.
 func (m *Manager) runSolver(instance InstanceId) error {
 	iMeta, err := m.lookupInstanceMetadata(instance)
 	if err != nil {
@@ -39,6 +42,60 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		return fmt.Errorf("no solve script for '%s'", cMeta.Id)
 	}
 
+	err = m.executeSolver(bMeta, iMeta.getNetworkName())
+	if err != nil {
+		return err
+	}
+
+	iMeta.LastSolved = time.Now().Unix()
+	return m.recordSolve(iMeta)
+}
+
+// CheckBuild builds and runs the challenge's solver against a build that has no
+// running instance, on Docker's default network (outbound access, but no
+// challenge host), and records the solve against the build on success. This
+// supports non-service challenges (artifact-only, flag-only), whose solver
+// consumes only the build's outputs and never connects to a challenge host.
+//
+// TODO(optimization): callers typically already hold the build and challenge
+// metadata this re-fetches (plus createSolveContext repeats the challenge
+// lookup internally — ~3 redundant read transactions per call); a
+// metadata-accepting variant would remove those. Also worth folding in when
+// this area is next touched: a DeliveryType/empty-flag guard, a deadline on
+// executeSolver's ContainerWait, moving the exported method to api.go with the
+// rest of the public surface, and a cmgrd route so REST consumers can check
+// non-service builds once they no longer have instances.
+func (m *Manager) CheckBuild(build BuildId) error {
+	bMeta, err := m.lookupBuildMetadata(build)
+	if err != nil {
+		return err
+	}
+
+	cMeta, err := m.lookupChallengeMetadata(bMeta.Challenge)
+	if err != nil {
+		return err
+	}
+
+	if !cMeta.SolveScript {
+		return fmt.Errorf("no solve script for '%s'", cMeta.Id)
+	}
+
+	err = m.executeSolver(bMeta, "")
+	if err != nil {
+		return err
+	}
+
+	bMeta.LastSolved = time.Now().Unix()
+	return m.recordBuildSolve(bMeta)
+}
+
+// executeSolver builds the solver image for the build, runs it to completion, and
+// compares the recovered flag against the build's flag. When netname is non-empty
+// the solver is attached to that Docker network (a running instance's network);
+// otherwise it runs on Docker's default network with no challenge host. Returns
+// nil only when the solver recovers the correct flag; recording the solve is left
+// to the caller.
+func (m *Manager) executeSolver(bMeta *BuildMetadata, netname string) error {
 	solveCtx := m.createSolveContext(bMeta)
 
 	imageName := fmt.Sprintf("%s/%s:%d", bMeta.Challenge, "solver", bMeta.Id)
@@ -88,14 +145,18 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		hConfig.SecurityOpt = []string{"seccomp:" + seccompPolicy}
 	}
 
-	netname := iMeta.getNetworkName()
-	nConfig := network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
+	// With no instance network (non-service builds) the solver runs on Docker's
+	// default bridge: there is no challenge host to reach, but outbound network
+	// access is preserved to match the historical behavior of solvers that
+	// download tooling or data at runtime.
+	nConfig := network.NetworkingConfig{}
+	if netname != "" {
+		nConfig.EndpointsConfig = map[string]*network.EndpointSettings{
 			netname: {
 				NetworkID: netname,
 				Aliases:   []string{"solver"},
 			},
-		},
+		}
 	}
 
 	respCC, err := m.cli.ContainerCreate(m.ctx, client.ContainerCreateOptions{
@@ -163,8 +224,7 @@ func (m *Manager) runSolver(instance InstanceId) error {
 
 		flagStr := strings.TrimSpace(string(flag))
 		if flagStr == bMeta.Flag {
-			iMeta.LastSolved = time.Now().Unix()
-			return m.recordSolve(iMeta)
+			return nil
 		}
 
 		return fmt.Errorf("solve script returned incorrect flag: received '%s', expected '%s'", flagStr, bMeta.Flag)
