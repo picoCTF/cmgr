@@ -408,7 +408,9 @@ func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string
 				fmt.Printf("error (%s): solver failed: %s\n", cMeta.Id, err)
 				return false
 			}
-		} else if solve && required {
+		} else if solve && required && cMeta.DeliveryType != cmgr.DeliveryFlagOnly {
+			// flag-only challenges have nothing to solve — the flag is the
+			// answer — so they are exempt from --require-solve.
 			fmt.Printf("error (%s): no solver found\n", cMeta.Id)
 			return false
 		} else if !solve {

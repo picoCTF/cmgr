@@ -478,14 +478,14 @@ func (m *Manager) validateBuild(cMeta *ChallengeMetadata, md *BuildMetadata, fil
 	}
 
 	// A challenge derived as artifact-only that produces no artifacts is inert:
-	// it stands up nothing and hands the player nothing. That is sometimes a
-	// forgotten '# PUBLISH' directive, but existing content legitimately builds
-	// this way (description-only challenges whose build exists to generate the
-	// flag), so warn rather than fail. Once the 'flag-only' challenge type
-	// exists, intentional inertness will be declared through it and this can
-	// become a hard error for undeclared cases.
+	// it stands up nothing and hands the player nothing. Intentional inertness
+	// should be declared with the 'flag-only' challenge type; undeclared cases
+	// are usually a forgotten '# PUBLISH' directive. Existing content still
+	// legitimately builds this way (description-only challenges predating the
+	// flag-only type), so warn rather than fail; this can become a hard error
+	// once that content is converted.
 	if cMeta.DeliveryType == DeliveryArtifactOnly && len(files) == 0 {
-		m.log.warnf("challenge publishes no ports and produces no artifacts (missing a '# PUBLISH' directive?): %s/%d", md.Challenge, md.Id)
+		m.log.warnf("challenge publishes no ports and produces no artifacts (missing a '# PUBLISH' directive? if intentional, use the 'flag-only' type): %s/%d", md.Challenge, md.Id)
 	}
 
 	return err

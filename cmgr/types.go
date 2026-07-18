@@ -140,9 +140,9 @@ const (
 	DeliveryArtifactOnly DeliveryType = "artifact_only"
 	// DeliveryFlagOnly: intentionally no ports and no artifacts; the build runs
 	// only to generate the flag and lookup data (e.g. multiple-choice options)
-	// for a bare submission prompt. No instance is ever launched. Reserved: it
-	// will be declared via a "flag-only" challenge type that is not yet
-	// registered, so this value is currently never derived.
+	// for a bare submission prompt. No instance is ever launched. Declared via
+	// the "flag-only" challenge type (that literal and the embedded
+	// flag-only.Dockerfile name must stay in sync with deriveDeliveryType).
 	DeliveryFlagOnly DeliveryType = "flag_only"
 )
 
