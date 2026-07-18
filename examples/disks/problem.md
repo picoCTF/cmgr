@@ -1,7 +1,7 @@
 # Recovery And IDentification
 
 - Namespace: cmgr/examples
-- Type: static-make
+- Type: custom
 - Category: Miscellaneous
 - Points: 150
 
