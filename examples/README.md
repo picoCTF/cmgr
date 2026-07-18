@@ -44,6 +44,22 @@ The `remote-make` challenge type will take a program that uses stdin/stdout to c
 
 The `static-make` challenge type has no network component and should be solvable solely by using the `artifacts.tar.gz` and `metadata.json` created during the build process.
 
+## Delivery Types
+
+Independent of the challenge type above (which controls how a challenge is *built*), `cmgr` derives a `delivery_type` for every challenge that describes what competitors actually receive:
+
+- **`service`** — the challenge publishes at least one port (via `# PUBLISH`); a running container serves competitors.  Whether it runs as a shared persistent instance or on-demand per user is decided by the schema's `instance_count`, not by the challenge.
+- **`artifact_only`** — the challenge publishes no ports; the `artifacts.tar.gz` produced at build time is the entire challenge and no running container is needed.  All `static-make` challenges are artifact-only, as is any `custom` challenge without a `# PUBLISH` directive.
+- **`flag_only`** — reserved for an upcoming challenge type for bare flag-submission challenges (no ports, no artifacts); not yet available.
+
+This value is derived from the Dockerfile — authors never write it, and it is reported through the `cmgrd` API so front-ends can distinguish these cases explicitly.
+
+Two things follow from this that challenge authors should know:
+
+- A challenge that publishes no ports **should** produce a non-empty `artifacts.tar.gz`; if it produces neither, the build logs a warning since this usually indicates a forgotten `# PUBLISH` directive (description-only challenges that build solely to generate a flag are the exception, and will eventually declare this via a dedicated challenge type).  `cmgr update` also tags each non-service challenge with its delivery type and prints a summary, so an unexpectedly artifact-only challenge is visible before deployment.
+- Solvers for artifact-only challenges run against the build's artifacts directly (on Docker's default network — no `challenge` host, outbound access preserved) rather than alongside a running instance, and `cmgr test` skips the start/stop steps for them.
+- **Keep a placeholder entrypoint (e.g. `CMD tail -f /dev/null`) in custom artifact-only Dockerfiles for now.**  cmgr currently still launches schema-managed instances for artifact-only challenges, and a container whose image has no `CMD` fails to launch.  A future release will stop launching instances for them entirely, after which the placeholder becomes unnecessary.
+
 ## Schemas
 
-"Schemas" are a mechanism for declaratively specifying the desired state for a set of builds and instances.  Builds and the associated instances that are created by a schema are locked out from manual control and should be the preferred way to manage a large number of builds and instances for events.  However, they are still event agnostic and can be used for managing other groupings of resources as appropriate.  An example schema can be found [here](./schema.yaml).  It is worth noting that a `-1` for instance count specifies that instances are manually controlled and allows the CLI or `cmgrd` to dynamically increase or decrease the number of running instances (useful for mapping instances uniquely to end-users without having a large number of unused containers).
+"Schemas" are a mechanism for declaratively specifying the desired state for a set of builds and instances.  Builds and the associated instances that are created by a schema are locked out from manual control and should be the preferred way to manage a large number of builds and instances for events.  However, they are still event agnostic and can be used for managing other groupings of resources as appropriate.  An example schema can be found [here](./schema.yaml).  It is worth noting that a `-1` for instance count specifies that instances are manually controlled and allows the CLI or `cmgrd` to dynamically increase or decrease the number of running instances (useful for mapping instances uniquely to end-users without having a large number of unused containers).  `instance_count` is only meaningful for challenges with a `service` delivery type; artifact-only challenges listed in a schema get their builds (one per seed, with artifacts and flags), and a future release will stop launching the placeholder instances that are currently still created for them.

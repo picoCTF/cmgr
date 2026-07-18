@@ -355,6 +355,25 @@ definitions:
           type: string
       solve_script:
         type: boolean
+      delivery_type:
+        type: string
+        enum: [service, artifact_only, flag_only]
+        description: >-
+          Derived runtime shape of the challenge. "service" challenges publish
+          at least one port and require a running instance. "artifact_only"
+          challenges publish no ports and are delivered entirely via build
+          artifacts, so consumers should treat an empty instance list on their
+          builds as expected — but must not assume the reverse: cmgr currently
+          still launches placeholder instances for artifact-only challenges in
+          schemas, and a future release will stop doing so, after which their
+          builds will always report empty instances. An empty instance list on
+          a build whose challenge is "service" AND whose instance_count is
+          positive indicates a deployment problem; on-demand builds
+          (instance_count -1) legitimately have zero instances between user
+          sessions. "flag_only" is reserved for an upcoming challenge type
+          (neither ports nor artifacts; the build exists only to generate a
+          flag and lookup data for a bare submission prompt) and is never
+          emitted by current cmgr. Absent field = pre-delivery_type cmgr.
       builds:
         type: array
         items:
