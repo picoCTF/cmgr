@@ -11,7 +11,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -114,15 +113,8 @@ func (m *Manager) executeSolver(cMeta *ChallengeMetadata, bMeta *BuildMetadata, 
 		return err
 	}
 
-	re := regexp.MustCompile(`{"errorDetail":[^\n]+`)
-	errMsg := re.Find(messages)
-	if errMsg != nil {
-		var dMsg dockerError
-		err = json.Unmarshal(errMsg, &dMsg)
-		if err == nil {
-			errMsg = []byte(dMsg.Error)
-		}
-		err = fmt.Errorf("failed to build image: %s", errMsg)
+	if streamErr := dockerStreamError(messages); streamErr != nil {
+		err = fmt.Errorf("failed to build image: %s", streamErr)
 		m.log.error(err)
 		return err
 	}

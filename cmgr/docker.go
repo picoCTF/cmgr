@@ -230,6 +230,25 @@ type dockerError struct {
 	Error string `json:"error"`
 }
 
+// dockerStreamError scans a Docker JSON message stream (from build, push, or
+// pull responses, which report failures in-stream rather than as API errors)
+// and returns the reported failure, or nil if the stream reports none.  The
+// failure line carries both an "error" string and an "errorDetail" object;
+// older daemons emitted "errorDetail" first while newer ones lead with
+// "error", so match either prefix and decode the whole line.
+func dockerStreamError(messages []byte) error {
+	re := regexp.MustCompile(`{"error[^\n]+`)
+	errMsg := re.Find(messages)
+	if errMsg == nil {
+		return nil
+	}
+	var dMsg dockerError
+	if json.Unmarshal(errMsg, &dMsg) == nil && dMsg.Error != "" {
+		return errors.New(dMsg.Error)
+	}
+	return errors.New(string(errMsg))
+}
+
 func (bMeta *BuildMetadata) dockerId(image Image) string {
 	return fmt.Sprintf("%d-%s", bMeta.Id, image.Host)
 }
@@ -289,15 +308,8 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 	}
 
 	// Search the response for an error message
-	re := regexp.MustCompile(`{"errorDetail":[^\n]+`)
-	errMsg := re.Find(messages)
-	if errMsg != nil {
-		var dMsg dockerError
-		err = json.Unmarshal(errMsg, &dMsg)
-		if err == nil {
-			errMsg = []byte(dMsg.Error)
-		}
-		err = fmt.Errorf("failed to build image: %s", errMsg)
+	if streamErr := dockerStreamError(messages); streamErr != nil {
+		err = fmt.Errorf("failed to build image: %s", streamErr)
 		m.log.error(err)
 		return err
 	}
@@ -319,14 +331,8 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 	}
 
 	// Search the response for an error message
-	errMsg = re.Find(messages)
-	if errMsg != nil {
-		var dMsg dockerError
-		err = json.Unmarshal(errMsg, &dMsg)
-		if err == nil {
-			errMsg = []byte(dMsg.Error)
-		}
-		err = fmt.Errorf("failed to push image: %s", errMsg)
+	if streamErr := dockerStreamError(messages); streamErr != nil {
+		err = fmt.Errorf("failed to push image: %s", streamErr)
 		m.log.error(err)
 		return err
 	}
@@ -348,9 +354,7 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 		pullResp.Close()
 		if err == nil {
 			// Search the response for an error message
-			re := regexp.MustCompile(`{"errorDetail":[^\n]+`)
-			errMsg := re.Find(messages)
-			if errMsg == nil {
+			if dockerStreamError(messages) == nil {
 				m.log.infof("Successfully pulled base image '%s'", baseName)
 				buildCache = append(buildCache, baseName)
 			}
@@ -408,15 +412,8 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 			return err
 		}
 
-		re := regexp.MustCompile(`{"errorDetail":[^\n]+`)
-		errMsg := re.Find(messages)
-		if errMsg != nil {
-			var dMsg dockerError
-			err = json.Unmarshal(errMsg, &dMsg)
-			if err == nil {
-				errMsg = []byte(dMsg.Error)
-			}
-			err = fmt.Errorf("failed to build image: %s", errMsg)
+		if streamErr := dockerStreamError(messages); streamErr != nil {
+			err = fmt.Errorf("failed to build image: %s", streamErr)
 			m.log.error(err)
 			return err
 		}
