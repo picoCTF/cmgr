@@ -650,7 +650,9 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 					// Stop and tear down existing instances. For persistent (non-on-demand)
 					// instances also restart them with the new image. On-demand (dynamic)
 					// instances are started per-user with injected env vars, so they are
-					// only torn down here and not restarted.
+					// only torn down here and not restarted. Non-service challenges never
+					// run instances, so any found here are placeholders left by older
+					// versions of cmgr and are removed entirely.
 					revPortMap, err := m.getReversePortMap(build.Challenge)
 					if err != nil {
 						errs = append(errs, err)
@@ -663,6 +665,12 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 					}
 					for _, iid := range instances {
 						instance, err := m.lookupInstanceMetadata(iid)
+						if err == nil && !cMeta.NeedsInstance() {
+							if err = m.stopInstance(instance); err != nil {
+								errs = append(errs, err)
+							}
+							continue
+						}
 						if err == nil {
 							err = m.stopContainers(instance)
 						}

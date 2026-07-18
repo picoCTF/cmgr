@@ -238,23 +238,26 @@ func (m *Manager) Start(build BuildId, envVars map[string]string) (InstanceId, e
 }
 
 func (m *Manager) newInstance(build *BuildMetadata, envVars map[string]string) (InstanceId, error) {
+	cMeta, err := m.GetChallengeMetadata(build.Challenge)
+	if err != nil {
+		return 0, err
+	}
+
+	if !cMeta.NeedsInstance() {
+		return 0, fmt.Errorf("challenge %s is %s: its builds are delivered without instances", cMeta.Id, cMeta.DeliveryType)
+	}
+
 	iMeta := &InstanceMetadata{
 		Build:      build.Id,
 		Ports:      make(map[string]int),
 		Containers: []string{},
 	}
-	err := m.openInstance(iMeta)
+	err = m.openInstance(iMeta)
 	if err != nil {
 		return 0, err
 	}
 
 	m.checkPrune()
-
-	cMeta, err := m.GetChallengeMetadata(build.Challenge)
-	if err != nil {
-		m.removeInstanceMetadata(iMeta.Id)
-		return 0, err
-	}
 
 	revPortMap, err := m.getReversePortMap(build.Challenge)
 	if err != nil {
@@ -446,10 +449,28 @@ func (m *Manager) convergeSchema(schema *Schema) []error {
 			continue
 		}
 
+		if len(builds) == 0 {
+			continue
+		}
+
+		// All builds in this group share one challenge; non-service challenges
+		// (artifact-only, flag-only) are fully delivered by their builds, so
+		// their instance target is zero regardless of the schema's
+		// instance_count.  The teardown loop below then removes any instances
+		// left over from versions of cmgr that still launched placeholders.
+		cMeta, err := m.lookupChallengeMetadata(builds[0].Challenge)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
 		for _, buildMeta := range builds {
 			target := schema.Challenges[buildMeta.Challenge].InstanceCount
 			if target == DYNAMIC_INSTANCES || target == LOCKED {
 				continue
+			}
+			if !cMeta.NeedsInstance() {
+				target = 0
 			}
 
 			instances, err := m.getBuildInstances(buildMeta.Id)

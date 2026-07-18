@@ -159,6 +159,16 @@ func deriveDeliveryType(challengeType string, publishedPorts int) DeliveryType {
 	}
 	return DeliveryService
 }
+
+// NeedsInstance reports whether running instances are part of delivering this
+// challenge. Only "service" challenges need them; artifact-only and flag-only
+// challenges are fully delivered by their builds. An unset DeliveryType
+// (metadata that never passed through the loader or a database read) counts as
+// needing instances, so a missed derivation can never silently skip instance
+// management.
+func (cm *ChallengeMetadata) NeedsInstance() bool {
+	return cm.DeliveryType == "" || cm.DeliveryType == DeliveryService
+}
 type ChallengeUpdates struct {
 	Added      []*ChallengeMetadata `json:"added"`
 	Refreshed  []*ChallengeMetadata `json:"refreshed"`
