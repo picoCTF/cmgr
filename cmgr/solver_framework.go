@@ -177,7 +177,7 @@ func (m *Manager) executeSolver(cMeta *ChallengeMetadata, bMeta *BuildMetadata, 
 	waitRes := m.cli.ContainerWait(waitCtx, cid, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	select {
 	case err := <-waitRes.Error:
-		if waitCtx.Err() != nil {
+		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
 			err = fmt.Errorf("solver container did not exit within %s", solverTimeout)
 		}
 		m.log.errorf("failed to wait on solve container: %s", err)

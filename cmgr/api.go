@@ -485,11 +485,13 @@ func (m *Manager) convergeSchema(schema *Schema) []error {
 
 		for _, buildMeta := range builds {
 			target := schema.Challenges[buildMeta.Challenge].InstanceCount
-			if target == DYNAMIC_INSTANCES || target == LOCKED {
-				continue
-			}
 			if !cMeta.NeedsInstance() {
+				// Checked before the on-demand/locked short-circuit so leftover
+				// placeholder instances are torn down even when the schema entry
+				// is DYNAMIC_INSTANCES or LOCKED.
 				target = 0
+			} else if target == DYNAMIC_INSTANCES || target == LOCKED {
+				continue
 			}
 
 			instances, err := m.getBuildInstances(buildMeta.Id)

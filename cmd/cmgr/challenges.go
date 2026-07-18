@@ -279,7 +279,7 @@ func printChallenges(challenges []*cmgr.ChallengeMetadata, verbose bool) {
 // authors notice when a challenge was classified as something other than a
 // network service (e.g. a forgotten '# PUBLISH' silently derives artifact_only).
 func deliveryTag(md *cmgr.ChallengeMetadata) string {
-	if md.DeliveryType == "" || md.DeliveryType == cmgr.DeliveryService {
+	if md.NeedsInstance() {
 		return ""
 	}
 	return fmt.Sprintf(" [%s]", md.DeliveryType)

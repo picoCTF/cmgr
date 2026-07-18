@@ -323,6 +323,10 @@ definitions:
         format: int64
       solve_script:
         type: boolean
+      delivery_type:
+        type: string
+        enum: [service, artifact_only, flag_only]
+        description: "Derived runtime shape of the challenge; non-service challenges never have instances."
   ChallengeMetadata:
     type: "object"
     properties:

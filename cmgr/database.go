@@ -86,6 +86,8 @@ const schemaQuery string = `
 		    ON UPDATE CASCADE ON DELETE CASCADE
 	);
 
+	CREATE INDEX IF NOT EXISTS portNamesIndex ON portNames(challenge);
+
 	CREATE TABLE IF NOT EXISTS builds (
 		id INTEGER PRIMARY KEY,
 		flag TEXT NOT NULL,

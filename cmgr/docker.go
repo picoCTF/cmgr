@@ -230,15 +230,16 @@ type dockerError struct {
 	Error string `json:"error"`
 }
 
+// The failure line in a Docker JSON message stream carries both an "error"
+// string and an "errorDetail" object; older daemons emitted "errorDetail"
+// first while newer ones lead with "error", so match either prefix.
+var dockerStreamErrRe = regexp.MustCompile(`{"error[^\n]+`)
+
 // dockerStreamError scans a Docker JSON message stream (from build, push, or
 // pull responses, which report failures in-stream rather than as API errors)
-// and returns the reported failure, or nil if the stream reports none.  The
-// failure line carries both an "error" string and an "errorDetail" object;
-// older daemons emitted "errorDetail" first while newer ones lead with
-// "error", so match either prefix and decode the whole line.
+// and returns the reported failure, or nil if the stream reports none.
 func dockerStreamError(messages []byte) error {
-	re := regexp.MustCompile(`{"error[^\n]+`)
-	errMsg := re.Find(messages)
+	errMsg := dockerStreamErrRe.Find(messages)
 	if errMsg == nil {
 		return nil
 	}

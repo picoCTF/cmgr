@@ -116,10 +116,11 @@ Relevant environment variables:
 }
 
 type ChallengeListElement struct {
-	Id               cmgr.ChallengeId `json:"id"`
-	SourceChecksum   uint32           `json:"source_checksum"`
-	MetadataChecksum uint32           `json:"metadata_checksum"`
-	SolveScript      bool             `json:"solve_script"`
+	Id               cmgr.ChallengeId  `json:"id"`
+	SourceChecksum   uint32            `json:"source_checksum"`
+	MetadataChecksum uint32            `json:"metadata_checksum"`
+	SolveScript      bool              `json:"solve_script"`
+	DeliveryType     cmgr.DeliveryType `json:"delivery_type"`
 }
 
 func (s state) listHandler(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +144,7 @@ func (s state) listHandler(w http.ResponseWriter, r *http.Request) {
 		respList[i].SourceChecksum = challenge.SourceChecksum
 		respList[i].MetadataChecksum = challenge.MetadataChecksum
 		respList[i].SolveScript = challenge.SolveScript
+		respList[i].DeliveryType = challenge.DeliveryType
 	}
 	body, err := json.Marshal(respList)
 	if err != nil {
