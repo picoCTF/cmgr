@@ -17,7 +17,7 @@ ARG FLAG
 RUN echo "{\"flag\":\"$FLAG\"}" > /challenge/metadata.json
 
 # Write the flag to a simple text file that our python server can read.
-RUN echo $FLAG > /challenge/flag.txt
+RUN echo "$FLAG" > /challenge/flag.txt
 
 # Copy our server
 COPY server.py /app/server.py

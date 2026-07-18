@@ -20,7 +20,7 @@ ARG FLAG
 
 # The "flag" field in this json object is mandatory, the rest are lookup fields.
 RUN echo "{\"flag\":\"$FLAG\"}" > /challenge/metadata.json
-RUN echo "$FLAG" | openssl aes-256-cbc -k unguessable -pbkdf2 -out /secret.enc
+RUN printf '%s' "$FLAG" | openssl aes-256-cbc -k unguessable -pbkdf2 -out /secret.enc
 
 # These "artifacts" are available to competitors for download
 RUN tar czvf /challenge/artifacts.tar.gz -C / secret.enc time.txt
