@@ -32,6 +32,28 @@ func TestDeriveDeliveryType(t *testing.T) {
 	}
 }
 
+// TestNeedsInstance covers the predicate gating all instance management:
+// only service challenges get instances, and an unset delivery type fails
+// safe by behaving like service.
+func TestNeedsInstance(t *testing.T) {
+	cases := []struct {
+		delivery DeliveryType
+		want     bool
+	}{
+		{DeliveryService, true},
+		{DeliveryArtifactOnly, false},
+		{DeliveryFlagOnly, false},
+		{"", true},
+	}
+
+	for _, c := range cases {
+		md := &ChallengeMetadata{DeliveryType: c.delivery}
+		if got := md.NeedsInstance(); got != c.want {
+			t.Errorf("NeedsInstance() with DeliveryType %q = %t, want %t", c.delivery, got, c.want)
+		}
+	}
+}
+
 // TestLookupChallengeMetadataDerivesDeliveryType verifies the read-time
 // derivation site: metadata loaded from the database must carry a valid
 // delivery type matching its stored port map.
@@ -123,6 +145,64 @@ func TestLookupChallengeMetadataDerivesDeliveryType(t *testing.T) {
 	}
 	if search[0].DeliveryType != DeliveryArtifactOnly {
 		t.Errorf("searchChallenges: expected DeliveryType %q, got %q", DeliveryArtifactOnly, search[0].DeliveryType)
+	}
+}
+
+// TestStartRejectsNonService verifies that starting an instance of a build
+// whose challenge needs no instance (artifact-only here) fails before any
+// instance state is created.
+func TestStartRejectsNonService(t *testing.T) {
+	mgr := setupTestManager(t)
+	defer mgr.db.Close()
+
+	challenge := &ChallengeMetadata{
+		Id:            "test/no-instance",
+		Name:          "No Instance",
+		Namespace:     "test",
+		ChallengeType: "custom",
+		Description:   "artifact only",
+		Hosts:         []HostInfo{{Name: "challenge", Target: ""}},
+		PortMap:       map[string]PortInfo{},
+		Tags:          []string{},
+		Attributes:    map[string]string{},
+		Path:          "/tmp/test/problem.md",
+		ChallengeOptions: ChallengeOptions{
+			Overrides: map[string]ContainerOptions{
+				"": {},
+			},
+		},
+	}
+	errs := mgr.addChallenges([]*ChallengeMetadata{challenge})
+	if len(errs) > 0 {
+		t.Fatalf("addChallenges failed: %v", errs)
+	}
+
+	build := &BuildMetadata{
+		Seed:          1,
+		Format:        "flag{%s}",
+		Challenge:     "test/no-instance",
+		Schema:        "manual-test",
+		InstanceCount: DYNAMIC_INSTANCES,
+	}
+	if err := mgr.openBuild(build); err != nil {
+		t.Fatalf("openBuild failed: %s", err)
+	}
+	build.Flag = "flag{static}"
+	build.Images = []Image{{Host: "challenge", Ports: []string{}}}
+	if err := mgr.finalizeBuild(build); err != nil {
+		t.Fatalf("finalizeBuild failed: %s", err)
+	}
+
+	if _, err := mgr.Start(build.Id, nil); err == nil {
+		t.Fatal("Start succeeded for an artifact-only build; expected an error")
+	}
+
+	instances, err := mgr.getBuildInstances(build.Id)
+	if err != nil {
+		t.Fatalf("getBuildInstances failed: %s", err)
+	}
+	if len(instances) != 0 {
+		t.Errorf("expected no instance rows after rejected Start, found %d", len(instances))
 	}
 }
 
