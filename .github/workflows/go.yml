@@ -70,5 +70,8 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+    # --keep-images retains build images until the end of the run so challenges
+    # can share base layers. Measuring its effect on a cold ephemeral runner
+    # (BuildKit cache starts empty) vs the master baseline without the flag.
     - name: Integration Tests
-      run: CMGR_DIR=examples CMGR_ARTIFACT_DIR=artifacts bin/cmgr test --require-solve examples
+      run: CMGR_DIR=examples CMGR_ARTIFACT_DIR=artifacts bin/cmgr test --require-solve --keep-images examples

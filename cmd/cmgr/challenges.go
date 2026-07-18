@@ -51,7 +51,10 @@ func displayChallengeInfo(mgr *cmgr.Manager, args []string) int {
 		path = parser.Arg(0)
 	}
 
-	metalist := getMetaByDir(mgr, path)
+	metalist, ok := getMetaByDir(mgr, path)
+	if !ok {
+		return RUNTIME_ERROR
+	}
 
 	for _, cMeta := range metalist {
 		fmt.Printf("%s\n", cMeta.Id)
@@ -145,6 +148,7 @@ func testChallenges(mgr *cmgr.Manager, args []string) int {
 	updateUsage(parser, "[<path>]")
 	noSolve := parser.Bool("no-solve", false, "do not run any solvers")
 	required := parser.Bool("require-solve", false, "raise an error if a challenge is missing a solver")
+	keepImages := parser.Bool("keep-images", false, "retain build images until the whole run finishes so challenges can share base layers")
 	seed := parser.Int("seed", time.Now().Nanosecond(), "the random `seed` for the challenge")
 	parser.Lookup("seed").DefValue = "random"
 	flagFormat := parser.String("flag-format", "flag{%s}", "the `format-string` to use for the flag")
@@ -171,11 +175,31 @@ func testChallenges(mgr *cmgr.Manager, args []string) int {
 		return RUNTIME_ERROR
 	}
 
-	metalist := getMetaByDir(mgr, path)
+	metalist, ok := getMetaByDir(mgr, path)
+	if !ok {
+		return RUNTIME_ERROR
+	}
+
+	// With --keep-images, build images are retained during the run so challenges
+	// can share base layers: a per-challenge Destroy prunes the shared base before
+	// the next challenge builds, forcing every challenge to reinstall it. Teardown
+	// is deferred to the end of the batch instead. Instances are unaffected --
+	// runTest stops them per challenge when solving (and leaves them running in
+	// interactive --no-solve mode, as before) -- so only image layers accumulate.
+	var built []cmgr.BuildId
+	if *keepImages {
+		defer func() {
+			for _, id := range built {
+				if err := mgr.Destroy(id); err != nil {
+					fmt.Printf("warning: could not destroy build %d: %s\n", id, err)
+				}
+			}
+		}()
+	}
 
 	retCode := NO_ERROR
 	for _, cMeta := range metalist {
-		if !runTest(mgr, cMeta, *flagFormat, *seed, !*noSolve, *required) {
+		if !runTest(mgr, cMeta, *flagFormat, *seed, !*noSolve, *required, *keepImages, &built) {
 			retCode = RUNTIME_ERROR
 		}
 	}
@@ -355,7 +379,12 @@ func printChanges(status *cmgr.ChallengeUpdates, verbose bool) {
 	}
 }
 
-func getMetaByDir(m *cmgr.Manager, dir string) []*cmgr.ChallengeMetadata {
+// getMetaByDir returns the unmodified challenges under dir and whether the
+// lookup succeeded. ok is false when errors occurred or the database is out of
+// sync (both already reported to the user); callers must not treat that as an
+// empty-but-successful result. A successful lookup that finds no challenges
+// returns (nil, true).
+func getMetaByDir(m *cmgr.Manager, dir string) ([]*cmgr.ChallengeMetadata, bool) {
 	cu := m.DetectChanges(dir)
 
 	for i, meta := range cu.Unmodified {
@@ -373,19 +402,19 @@ func getMetaByDir(m *cmgr.Manager, dir string) []*cmgr.ChallengeMetadata {
 		for i, err := range cu.Errors {
 			fmt.Printf("    %d) %s\n", i+1, err)
 		}
-		return nil
+		return nil, false
 	}
 
 	if len(cu.Added)+len(cu.Updated)+len(cu.Refreshed)+len(cu.Removed) > 0 {
 		fmt.Println("error: database out of sync with filesystem, run 'update'")
 		printChanges(cu, false)
-		return nil
+		return nil, false
 	}
 
-	return cu.Unmodified
+	return cu.Unmodified, true
 }
 
-func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string, seed int, solve, required bool) bool {
+func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string, seed int, solve, required, keepImages bool, built *[]cmgr.BuildId) bool {
 
 	// Build
 	builds, err := mgr.Build(cMeta.Id, []int{seed}, flagFormat)
@@ -395,7 +424,13 @@ func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string
 	}
 	build := builds[0]
 	if solve {
-		defer mgr.Destroy(build.Id)
+		if keepImages {
+			// Defer teardown to the end of the batch (see testChallenges) so the
+			// shared base layers survive for the next challenge to reuse.
+			*built = append(*built, build.Id)
+		} else {
+			defer mgr.Destroy(build.Id)
+		}
 	}
 
 	// Non-service challenges (artifact-only, flag-only) have no runtime entry
