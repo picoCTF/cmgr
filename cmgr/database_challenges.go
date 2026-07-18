@@ -7,16 +7,35 @@ import (
 	"strings"
 )
 
+// Columns for list/search results: the light-weight subset plus what
+// deriveDeliveryType needs (challenge type + published port count), so every
+// ChallengeMetadata leaving these paths carries a valid delivery type.
+const listChallengeColumns = `id, name, path, sourcechecksum, metadatachecksum, solvescript, challengetype,
+	(SELECT COUNT(*) FROM portNames WHERE portNames.challenge = challenges.id) AS portcount`
+
+type listChallengeRow struct {
+	ChallengeMetadata
+	PortCount int `db:"portcount"`
+}
+
+func listRowsToMetadata(rows []listChallengeRow) []*ChallengeMetadata {
+	metadata := make([]*ChallengeMetadata, len(rows))
+	for i := range rows {
+		md := rows[i].ChallengeMetadata
+		md.DeliveryType = deriveDeliveryType(md.ChallengeType, rows[i].PortCount)
+		metadata[i] = &md
+	}
+	return metadata
+}
+
 // Gets just the ID and checksum for all known challenges
 func (m *Manager) listChallenges() ([]*ChallengeMetadata, error) {
-	metadata := []*ChallengeMetadata{}
-	err := m.db.Select(&metadata, "SELECT id, name, path, sourcechecksum, metadatachecksum, solvescript FROM challenges ORDER BY id;")
-	return metadata, err
+	rows := []listChallengeRow{}
+	err := m.db.Select(&rows, "SELECT "+listChallengeColumns+" FROM challenges ORDER BY id;")
+	return listRowsToMetadata(rows), err
 }
 
 func (m *Manager) searchChallenges(tags []string) ([]*ChallengeMetadata, error) {
-	metadata := []*ChallengeMetadata{}
-	var err error
 	if len(tags) == 0 {
 		return m.listChallenges()
 	}
@@ -30,10 +49,11 @@ func (m *Manager) searchChallenges(tags []string) ([]*ChallengeMetadata, error) 
 		tagBaseQuery +
 		strings.Repeat(" INTERSECT "+tagBaseQuery, len(tags)-1) +
 		")"
-	query := fmt.Sprintf("SELECT id, name, path, sourcechecksum, metadatachecksum, solvescript FROM challenges WHERE id IN %s ORDER BY id;", subQuery)
-	err = m.db.Select(&metadata, query, interfaceTags...)
+	query := fmt.Sprintf("SELECT %s FROM challenges WHERE id IN %s ORDER BY id;", listChallengeColumns, subQuery)
+	rows := []listChallengeRow{}
+	err := m.db.Select(&rows, query, interfaceTags...)
 
-	return metadata, err
+	return listRowsToMetadata(rows), err
 }
 
 func (m *Manager) lookupChallengeMetadata(challenge ChallengeId) (*ChallengeMetadata, error) {
@@ -70,6 +90,11 @@ func (m *Manager) lookupChallengeMetadata(challenge ChallengeId) (*ChallengeMeta
 	for _, port := range ports {
 		metadata.PortMap[port.Name] = PortInfo{port.Host, port.Port}
 	}
+
+	// Derived from the same port data exposed as PortMap (plus the challenge
+	// type) so the reported delivery type can never disagree with the
+	// instance-launch decision that reads it.
+	metadata.DeliveryType = deriveDeliveryType(metadata.ChallengeType, len(metadata.PortMap))
 
 	attributes := []struct {
 		Key   string

@@ -112,7 +112,52 @@ type ChallengeMetadata struct {
 	ChallengeOptions ChallengeOptions    `json:"challenge_options,omitempty"`
 
 	SolveScript bool             `json:"solve_script,omitempty"`
-	Builds      []*BuildMetadata `json:"builds,omitempty"`
+
+	// DeliveryType classifies what a player receives and therefore what cmgr
+	// must stand up at runtime. It is derived (deriveDeliveryType), never stored
+	// or author-written, so it cannot disagree with the port map or challenge
+	// type it is computed from. Always emitted (no omitempty) so consumers can
+	// distinguish "service" from absent-on-old-cmgr. Instances are launched only
+	// for "service" challenges; consumers should treat an empty instance pool as
+	// expected exactly when this is not "service".
+	DeliveryType DeliveryType `json:"delivery_type" db:"-"`
+
+	Builds []*BuildMetadata `json:"builds,omitempty"`
+}
+
+// DeliveryType is the intrinsic runtime shape of a challenge: what the player
+// receives and what infrastructure must exist for it. It is orthogonal to the
+// schema-level deployment policy (instance_count: persistent vs on-demand),
+// which only applies to "service" challenges.
+type DeliveryType string
+
+const (
+	// DeliveryService: the challenge publishes at least one port; a running
+	// instance is required for players to interact with it.
+	DeliveryService DeliveryType = "service"
+	// DeliveryArtifactOnly: no published ports; the artifacts produced at build
+	// time are the entire challenge and no instance is ever launched.
+	DeliveryArtifactOnly DeliveryType = "artifact_only"
+	// DeliveryFlagOnly: intentionally no ports and no artifacts; the build runs
+	// only to generate the flag and lookup data (e.g. multiple-choice options)
+	// for a bare submission prompt. No instance is ever launched. Reserved: it
+	// will be declared via a "flag-only" challenge type that is not yet
+	// registered, so this value is currently never derived.
+	DeliveryFlagOnly DeliveryType = "flag_only"
+)
+
+// deriveDeliveryType is the single source of truth for DeliveryType, used by
+// both the loader (parse time) and metadata reads (query time). Intentional
+// inertness cannot be derived (it is indistinguishable from a forgotten
+// '# PUBLISH' directive), so flag-only must be declared via the challenge type.
+func deriveDeliveryType(challengeType string, publishedPorts int) DeliveryType {
+	if challengeType == "flag-only" {
+		return DeliveryFlagOnly
+	}
+	if publishedPorts == 0 {
+		return DeliveryArtifactOnly
+	}
+	return DeliveryService
 }
 type ChallengeUpdates struct {
 	Added      []*ChallengeMetadata `json:"added"`

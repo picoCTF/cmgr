@@ -477,6 +477,17 @@ func (m *Manager) validateBuild(cMeta *ChallengeMetadata, md *BuildMetadata, fil
 		}
 	}
 
+	// A challenge derived as artifact-only that produces no artifacts is inert:
+	// it stands up nothing and hands the player nothing. That is sometimes a
+	// forgotten '# PUBLISH' directive, but existing content legitimately builds
+	// this way (description-only challenges whose build exists to generate the
+	// flag), so warn rather than fail. Once the 'flag-only' challenge type
+	// exists, intentional inertness will be declared through it and this can
+	// become a hard error for undeclared cases.
+	if cMeta.DeliveryType == DeliveryArtifactOnly && len(files) == 0 {
+		m.log.warnf("challenge publishes no ports and produces no artifacts (missing a '# PUBLISH' directive?): %s/%d", md.Challenge, md.Id)
+	}
+
 	return err
 }
 
@@ -663,6 +674,11 @@ func (m *Manager) processDockerfile(md *ChallengeMetadata) error {
 			return err
 		}
 	}
+
+	// Derived from the same PortMap consumed everywhere else so the parse-time
+	// value (used for the update/info indicator and the inert-build check)
+	// matches the read-time value in lookupChallengeMetadata.
+	md.DeliveryType = deriveDeliveryType(md.ChallengeType, len(md.PortMap))
 
 	return err
 }
