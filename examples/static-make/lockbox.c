@@ -1,3 +1,4 @@
+#include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,10 +35,10 @@ int main(int argc, char **argv) {
     }
 
     uint8_t hash[SHA256_DIGEST_LENGTH];
-    SHA256_CTX hash_ctx;
-    SHA256_Init(&hash_ctx);
-    SHA256_Update(&hash_ctx, buf, len);
-    SHA256_Final(hash, &hash_ctx);
+    if (EVP_Digest(buf, len, hash, NULL, EVP_sha256(), NULL) != 1) {
+        puts("Error: could not hash the password\r");
+        return -1;
+    }
 
     if (memcmp(hash, password_hash, SHA256_DIGEST_LENGTH)) {
         puts("Wrong password so no flag for you!");

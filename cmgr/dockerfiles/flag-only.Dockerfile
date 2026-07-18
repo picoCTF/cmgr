@@ -2,12 +2,19 @@ FROM ubuntu:24.04 AS base
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
-    build-essential
+    python3-pip \
+    socat && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y \
+    make && \
+    rm -rf /var/lib/apt/lists/*
+
 RUN install -d -m 0700 /challenge
 # End of shared layers for all flag-only challenges
 
 COPY Dockerfile packages.txt* ./
-RUN if [ -f packages.txt ]; then apt-get update && xargs -a packages.txt apt-get install -y; fi
+RUN if [ -f packages.txt ]; then apt-get update && xargs -a packages.txt apt-get install -y && rm -rf /var/lib/apt/lists/*; fi
 
 COPY . /app
 WORKDIR /app

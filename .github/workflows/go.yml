@@ -54,5 +54,21 @@ jobs:
     - name: Prepare Integration Tests
       run:  mkdir artifacts
 
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+    # Cached across runs via the GitHub Actions cache, so the heavy libguestfs +
+    # kernel install only re-runs when ci/guestfish-base.Dockerfile changes.
+    # load: true places the image in the daemon so cmgr's FROM can resolve it.
+    - name: Build shared example base image
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      with:
+        context: ci
+        file: ci/guestfish-base.Dockerfile
+        tags: cmgr/examples-guestfish-base:latest
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
     - name: Integration Tests
       run: CMGR_DIR=examples CMGR_ARTIFACT_DIR=artifacts bin/cmgr test --require-solve examples
