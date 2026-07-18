@@ -195,12 +195,13 @@ Available commands:
   test [<path>]
       Shortcut for calling 'update' on the given path followed by build,
       start, check, stop, destroy for each challenge in the directory.
-      Artifact-only challenges (no published ports) skip the start/stop
-      steps and run their solver directly against the build's artifacts.
+      Non-service challenges (no published ports, or the 'flag-only' type)
+      skip the start/stop steps and run their solver directly against the
+      build; 'flag-only' challenges are exempt from --require-solve.
 
   playtest <challenge>
-      Creates a build and instance of the challenge and then starts a simple
-      http front-end scoped to only that instance.
+      Creates a build of the challenge (plus an instance, for service
+      challenges) and then starts a simple http front-end scoped to it.
 
   dockerfile <type>
   		Prints out the Dockerfile associated with the given challenge type.

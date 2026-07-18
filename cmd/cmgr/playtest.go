@@ -42,6 +42,12 @@ func playtestChallenge(mgr *cmgr.Manager, args []string) int {
 		iface = "localhost" // Force the server to use a single interface
 	}
 
+	cMeta, err := mgr.GetChallengeMetadata(cid)
+	if err != nil {
+		fmt.Printf("error getting challenge metadata: %s\n", err)
+		return RUNTIME_ERROR
+	}
+
 	builds, err := mgr.Build(cid, []int{*seed}, *flagFormat)
 	if err != nil {
 		fmt.Printf("error creating build: %s\n", err)
@@ -50,17 +56,24 @@ func playtestChallenge(mgr *cmgr.Manager, args []string) int {
 	bid := builds[0].Id
 	defer mgr.Destroy(bid)
 
-	iid, err := mgr.Start(bid, nil)
-	if err != nil {
-		fmt.Printf("error creating instance: %s\n", err)
-		return RUNTIME_ERROR
+	// Non-service challenges have no instance to start; the portal serves the
+	// description, artifacts, and flag check from the build alone.
+	var iid cmgr.InstanceId
+	if cMeta.DeliveryType == cmgr.DeliveryService {
+		iid, err = mgr.Start(bid, nil)
+		if err != nil {
+			fmt.Printf("error creating instance: %s\n", err)
+			return RUNTIME_ERROR
+		}
 	}
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, os.Kill)
 	go func() {
 		_ = <-sigs
-		mgr.Stop(iid)
+		if iid != 0 {
+			mgr.Stop(iid)
+		}
 		mgr.Destroy(bid)
 		os.Exit(0)
 	}()
@@ -81,10 +94,13 @@ func launchPortal(mgr *cmgr.Manager, iface string, port int, cid cmgr.ChallengeI
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		iMeta, err := mgr.GetInstanceMetadata(iid)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
+		iMeta := &cmgr.InstanceMetadata{}
+		if iid != 0 {
+			iMeta, err = mgr.GetInstanceMetadata(iid)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.Write([]byte(`<!DOCTYPE html>
