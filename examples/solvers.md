@@ -14,6 +14,8 @@ implements the solution (both regular build tools and `pwntools` are installed b
 
 The `cmgr` interface will ensure any requested dependencies are installed prior to launching the script and will launch the script from a container in the same network as the challenge itself.  This allows the challenge author to leverage the standardized DNS naming convention (`challenge` for the container hosting the challenge and `solver` for the solve script container) as well as the static ports in use (5000/tcp for `cmgr` challenge types and whatever was chosen for "custom" challenges).
 
+For artifact-only challenges (no published ports, e.g. `static-make`), there is no challenge container to connect to: the solver container runs on Docker's default network, so the `challenge` DNS name does not resolve and the flag must be recovered from the extracted artifacts in the working directory.  Outbound network access (e.g. for downloading tooling at runtime) remains available as before.
+
 In addition to the files in the `solver` directory, `cmgr` will extract the artifacts given to competitors into the working directory of the solve script prior to launch.
 
 Once the flag has been retrieved, the solve script should write the flag to a file named `flag` in the working directory and exit.

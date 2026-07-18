@@ -116,10 +116,11 @@ Relevant environment variables:
 }
 
 type ChallengeListElement struct {
-	Id               cmgr.ChallengeId `json:"id"`
-	SourceChecksum   uint32           `json:"source_checksum"`
-	MetadataChecksum uint32           `json:"metadata_checksum"`
-	SolveScript      bool             `json:"solve_script"`
+	Id               cmgr.ChallengeId  `json:"id"`
+	SourceChecksum   uint32            `json:"source_checksum"`
+	MetadataChecksum uint32            `json:"metadata_checksum"`
+	SolveScript      bool              `json:"solve_script"`
+	DeliveryType     cmgr.DeliveryType `json:"delivery_type"`
 }
 
 func (s state) listHandler(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +144,7 @@ func (s state) listHandler(w http.ResponseWriter, r *http.Request) {
 		respList[i].SourceChecksum = challenge.SourceChecksum
 		respList[i].MetadataChecksum = challenge.MetadataChecksum
 		respList[i].SolveScript = challenge.SolveScript
+		respList[i].DeliveryType = challenge.DeliveryType
 	}
 	body, err := json.Marshal(respList)
 	if err != nil {
@@ -238,6 +240,13 @@ func (s state) buildHandler(w http.ResponseWriter, r *http.Request) {
 	pathLen := len(path)
 
 	if pathLen == 4 {
+		// POST runs the solver against the build (non-service challenges have
+		// no instance to check); any other method falls through to artifact
+		// retrieval so an artifact named "check" stays reachable via GET.
+		if path[pathLen-1] == "check" && r.Method == "POST" {
+			s.buildCheckHandler(w, r)
+			return
+		}
 		s.artifactsHandler(w, r)
 		return
 	}
@@ -306,6 +315,32 @@ func (s state) buildHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err != nil {
+		respCode = http.StatusInternalServerError
+		if _, ok := err.(*cmgr.UnknownIdentifierError); ok {
+			respCode = http.StatusNotFound
+		}
+		body = []byte(err.Error())
+	}
+
+	w.WriteHeader(respCode)
+	w.Write(body)
+}
+
+func (s state) buildCheckHandler(w http.ResponseWriter, r *http.Request) {
+	path := strings.Split(r.URL.Path, "/")
+	pathLen := len(path)
+
+	buildInt, err := strconv.Atoi(path[pathLen-2])
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	var body []byte
+	respCode := http.StatusNoContent
+	err = s.mgr.CheckBuild(cmgr.BuildId(buildInt))
 	if err != nil {
 		respCode = http.StatusInternalServerError
 		if _, ok := err.(*cmgr.UnknownIdentifierError); ok {

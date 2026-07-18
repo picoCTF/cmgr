@@ -1,0 +1,5 @@
+# Challenge content is consumed inside Linux containers (apt package lists,
+# Makefiles, scripts, Dockerfiles), where CRLF line endings break tooling in
+# hard-to-diagnose ways (e.g. apt failing on "package\r").  Normalize
+# everything git detects as text to LF, on every platform.
+* text=auto eol=lf

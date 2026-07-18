@@ -3,6 +3,7 @@ package cmgr
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +19,14 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// solverTimeout bounds how long a solver container may run before the check
+// fails; without it a hung solver blocks the caller forever. Generous because
+// solvers legitimately compile tooling and brute-force at runtime.
+const solverTimeout = 10 * time.Minute
+
+// runSolver builds and runs the challenge's solver against a running instance,
+// attaching the solver to that instance's network, and records the solve on
+// success.
 func (m *Manager) runSolver(instance InstanceId) error {
 	iMeta, err := m.lookupInstanceMetadata(instance)
 	if err != nil {
@@ -39,7 +47,54 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		return fmt.Errorf("no solve script for '%s'", cMeta.Id)
 	}
 
-	solveCtx := m.createSolveContext(bMeta)
+	err = m.executeSolver(cMeta, bMeta, iMeta.getNetworkName())
+	if err != nil {
+		return err
+	}
+
+	iMeta.LastSolved = time.Now().Unix()
+	return m.recordSolve(iMeta)
+}
+
+// checkBuild builds and runs the challenge's solver against a build that has no
+// running instance, on Docker's default network (outbound access, but no
+// challenge host), and records the solve against the build on success. This
+// supports non-service challenges (artifact-only, flag-only), whose solver
+// consumes only the build's outputs and never connects to a challenge host;
+// service builds are rejected because their solvers expect a challenge host.
+func (m *Manager) checkBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata) error {
+	if cMeta.NeedsInstance() {
+		return fmt.Errorf("'%s' is a service challenge: start an instance and check that instead", cMeta.Id)
+	}
+
+	if !cMeta.SolveScript {
+		return fmt.Errorf("no solve script for '%s'", cMeta.Id)
+	}
+
+	err := m.executeSolver(cMeta, bMeta, "")
+	if err != nil {
+		return err
+	}
+
+	bMeta.LastSolved = time.Now().Unix()
+	return m.recordBuildSolve(bMeta)
+}
+
+// executeSolver builds the solver image for the build, runs it to completion, and
+// compares the recovered flag against the build's flag. When netname is non-empty
+// the solver is attached to that Docker network (a running instance's network);
+// otherwise it runs on Docker's default network with no challenge host. Returns
+// nil only when the solver recovers the correct flag; recording the solve is left
+// to the caller.
+func (m *Manager) executeSolver(cMeta *ChallengeMetadata, bMeta *BuildMetadata, netname string) error {
+	// The solver's output is compared against this flag, so an empty flag would
+	// let a solver "succeed" by writing an empty file; treat it as an authoring
+	// error rather than a solve.
+	if bMeta.Flag == "" {
+		return fmt.Errorf("build %d of '%s' has an empty flag", bMeta.Id, cMeta.Id)
+	}
+
+	solveCtx := m.createSolveContext(cMeta, bMeta)
 
 	imageName := fmt.Sprintf("%s/%s:%d", bMeta.Challenge, "solver", bMeta.Id)
 	opts := client.ImageBuildOptions{Remove: true, Tags: []string{imageName}}
@@ -58,15 +113,8 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		return err
 	}
 
-	re := regexp.MustCompile(`{"errorDetail":[^\n]+`)
-	errMsg := re.Find(messages)
-	if errMsg != nil {
-		var dMsg dockerError
-		err = json.Unmarshal(errMsg, &dMsg)
-		if err == nil {
-			errMsg = []byte(dMsg.Error)
-		}
-		err = fmt.Errorf("failed to build image: %s", errMsg)
+	if streamErr := dockerStreamError(messages); streamErr != nil {
+		err = fmt.Errorf("failed to build image: %s", streamErr)
 		m.log.error(err)
 		return err
 	}
@@ -88,14 +136,18 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		hConfig.SecurityOpt = []string{"seccomp:" + seccompPolicy}
 	}
 
-	netname := iMeta.getNetworkName()
-	nConfig := network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
+	// With no instance network (non-service builds) the solver runs on Docker's
+	// default bridge: there is no challenge host to reach, but outbound network
+	// access is preserved to match the historical behavior of solvers that
+	// download tooling or data at runtime.
+	nConfig := network.NetworkingConfig{}
+	if netname != "" {
+		nConfig.EndpointsConfig = map[string]*network.EndpointSettings{
 			netname: {
 				NetworkID: netname,
 				Aliases:   []string{"solver"},
 			},
-		},
+		}
 	}
 
 	respCC, err := m.cli.ContainerCreate(m.ctx, client.ContainerCreateOptions{
@@ -118,9 +170,16 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		return err
 	}
 
-	waitRes := m.cli.ContainerWait(m.ctx, cid, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	// Bound the wait so a hung solver cannot block forever; the deferred
+	// force-remove above kills the container if the deadline fires.
+	waitCtx, cancel := context.WithTimeout(m.ctx, solverTimeout)
+	defer cancel()
+	waitRes := m.cli.ContainerWait(waitCtx, cid, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	select {
 	case err := <-waitRes.Error:
+		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("solver container did not exit within %s", solverTimeout)
+		}
 		m.log.errorf("failed to wait on solve container: %s", err)
 		return err
 	case _ = <-waitRes.Result:
@@ -163,8 +222,7 @@ func (m *Manager) runSolver(instance InstanceId) error {
 
 		flagStr := strings.TrimSpace(string(flag))
 		if flagStr == bMeta.Flag {
-			iMeta.LastSolved = time.Now().Unix()
-			return m.recordSolve(iMeta)
+			return nil
 		}
 
 		return fmt.Errorf("solve script returned incorrect flag: received '%s', expected '%s'", flagStr, bMeta.Flag)
@@ -178,21 +236,16 @@ func (m *Manager) runSolver(instance InstanceId) error {
 	return errors.New("failed to process flag results properly")
 }
 
-func (m *Manager) createSolveContext(meta *BuildMetadata) io.Reader {
+func (m *Manager) createSolveContext(cMeta *ChallengeMetadata, meta *BuildMetadata) io.Reader {
 	r, w := io.Pipe()
 	ctx := tar.NewWriter(w)
 
 	customDocker := false
 
 	go func() {
-		cMeta, err := m.lookupChallengeMetadata(meta.Challenge)
-		if err != nil {
-			w.CloseWithError(err)
-		}
-
 		// Copy in contents of the "solver" directory
 		solveDir := filepath.Join(filepath.Dir(cMeta.Path), "solver")
-		err = filepath.Walk(solveDir, func(path string, info os.FileInfo, err error) error {
+		err := filepath.Walk(solveDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}

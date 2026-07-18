@@ -110,6 +110,7 @@ paths:
       tags: [builds]
       produces: ["application/json"]
       summary: "Starts an instance of the build"
+      description: "Fails for builds of non-service challenges (`delivery_type` other than \"service\"), which are delivered without instances."
       parameters:
         - in: "body"
           name: "body"
@@ -121,7 +122,7 @@ paths:
         "404":
           description: "Invalid path string to include invalid build identifier"
         "500":
-          description: "A database error occurred in `cmgr`"
+          description: "A database error occurred in `cmgr`, or the build belongs to a non-service challenge and cannot have instances"
         "201":
           description: "The identifier of the new instance"
           schema:
@@ -138,6 +139,25 @@ paths:
           description: "A database error occurred in `cmgr`"
         "204":
           description: "Indicates successfully deleted"
+  /builds/{build_id}/check:
+    parameters:
+      - name: "build_id"
+        in: "path"
+        description: "The identifier for the build"
+        required: true
+        type: "string"
+    post:
+      tags: [builds]
+      produces: ["application/json"]
+      summary: "Runs the automated solver against the build without an instance"
+      description: "Only valid for builds of non-service challenges (`delivery_type` of \"artifact_only\" or \"flag_only\"), whose solvers consume the build's outputs; service builds are rejected (check a running instance instead)."
+      responses:
+        "404":
+          description: "Invalid path string to include invalid build identifier"
+        "500":
+          description: "A database error occurred in `cmgr`.  Could also indicate that the solve failed or does not exist, or that the build belongs to a service challenge."
+        "204":
+          description: "Indicates solve ran correctly"
   /builds/{build_id}/{artifact}:
     parameters:
       - name: "build_id"
@@ -303,6 +323,10 @@ definitions:
         format: int64
       solve_script:
         type: boolean
+      delivery_type:
+        type: string
+        enum: [service, artifact_only, flag_only]
+        description: "Derived runtime shape of the challenge; non-service challenges never have instances."
   ChallengeMetadata:
     type: "object"
     properties:
@@ -355,6 +379,24 @@ definitions:
           type: string
       solve_script:
         type: boolean
+      delivery_type:
+        type: string
+        enum: [service, artifact_only, flag_only]
+        description: >-
+          Derived runtime shape of the challenge. "service" challenges publish
+          at least one port and are the only ones that run instances.
+          "artifact_only" challenges publish no ports and are delivered
+          entirely via build artifacts: their builds always report an empty
+          instance list, and requests to start an instance of them fail. An
+          empty instance list on a build whose challenge is "service" AND
+          whose instance_count is positive indicates a deployment problem;
+          on-demand builds (instance_count -1) legitimately have zero
+          instances between user sessions. "flag_only" challenges (declared
+          via the "flag-only" challenge type) publish neither ports nor
+          artifacts; the build exists only to generate a flag and lookup data
+          for a bare submission prompt, so front-ends should render only a
+          submission field for them. Absent field = pre-delivery_type cmgr,
+          which launches instances for every build.
       builds:
         type: array
         items:

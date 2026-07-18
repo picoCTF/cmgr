@@ -129,9 +129,13 @@ your challenges.  It is as simple as creating a directory named `solver` with
 a Python script called `solve.py`.  This script will get its own Docker
 container on the same network as the instance it is checking and start with
 all of the artifact files and additional information provided to competitors in
-its working directory.  Once it solves the challenge, it just needs to write
-the flag value to a file named `flag` in its current working directory and
-**cmgr** will validate the answer and report it back to the user.
+its working directory.  (For artifact-only challenges — those that publish no
+ports — there is no instance to connect to, so the solver container runs on
+Docker's default network with no `challenge` host and works from the build's
+artifacts; outbound network access is preserved.)  Once it solves the
+challenge, it just needs to write the flag value to a file named `flag` in its
+current working directory and **cmgr** will validate the answer and report it
+back to the user.
 
 In both the challenge and solver cases, we support challenge authors using
 custom Dockerfiles to support creative challenges that go beyond the most
@@ -169,6 +173,22 @@ equally to **every** container in the build — there is no per-container filter
 must re-issue `POST /builds/<id>` with the appropriate runtime configuration to
 bring those instances back up. Persistent (schema-managed) instances are
 restarted automatically as before.
+
+**Note:** Challenge metadata includes a derived `delivery_type` field
+(`"service"`, `"artifact_only"`, or `"flag_only"`) describing what competitors
+receive: a running network service, only downloadable build artifacts, or only
+a flag-submission prompt, respectively.  Only `service` challenges run
+instances: builds of non-service challenges always report an empty instance
+list, and requests to start an instance of them fail.  (Instances left over
+from older cmgr versions, which still launched placeholders for artifact-only
+challenges, are torn down on the next schema update or challenge rebuild.)
+An empty instance list on a `service` build with a *positive* `instance_count`
+indicates a deployment problem; on-demand builds (`instance_count` of -1)
+legitimately have zero instances whenever no user session is active.
+(`"flag_only"` challenges — declared via the `flag-only` challenge type — are
+bare submission prompts whose builds carry only a flag and lookup data, with
+no artifacts; payloads from older cmgr versions omit `delivery_type` entirely,
+in which case every build has instances as before.)
 
 **Note:** Runtime env injection (`user_id` / `env`) is currently only exposed
 through the `cmgrd` REST API. The `cmgr` CLI commands (`start`, `playtest`,
