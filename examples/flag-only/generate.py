@@ -6,7 +6,15 @@ import json
 import os
 import random
 
-options = ["Transport", "Network", "Session", "Data Link"]
+options = [
+    "Transport",
+    "Application",
+    "Presentation",
+    "Session",
+    "Network",
+    "Data Link",
+    "Physical",
+]
 answer = options[0]
 
 random.seed(int(os.environ["SEED"]))

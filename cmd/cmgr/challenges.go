@@ -400,8 +400,9 @@ func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string
 
 	// Non-service challenges (artifact-only, flag-only) have no runtime entry
 	// point, so no instance is started: the solver (if any) runs directly against
-	// the build and interactive output reports only the build.
-	if cMeta.DeliveryType != cmgr.DeliveryService {
+	// the build and interactive output reports only the build. NeedsInstance
+	// fails safe: an unset delivery type behaves like a service challenge.
+	if !cMeta.NeedsInstance() {
 		if solve && cMeta.SolveScript {
 			err = mgr.CheckBuild(build.Id)
 			if err != nil {

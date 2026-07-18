@@ -57,9 +57,10 @@ func playtestChallenge(mgr *cmgr.Manager, args []string) int {
 	defer mgr.Destroy(bid)
 
 	// Non-service challenges have no instance to start; the portal serves the
-	// description, artifacts, and flag check from the build alone.
+	// description, artifacts, and flag check from the build alone. NeedsInstance
+	// fails safe: an unset delivery type behaves like a service challenge.
 	var iid cmgr.InstanceId
-	if cMeta.DeliveryType == cmgr.DeliveryService {
+	if cMeta.NeedsInstance() {
 		iid, err = mgr.Start(bid, nil)
 		if err != nil {
 			fmt.Printf("error creating instance: %s\n", err)
