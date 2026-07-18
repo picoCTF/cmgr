@@ -195,6 +195,8 @@ Available commands:
   test [<path>]
       Shortcut for calling 'update' on the given path followed by build,
       start, check, stop, destroy for each challenge in the directory.
+      Artifact-only challenges (no published ports) skip the start/stop
+      steps and run their solver directly against the build's artifacts.
 
   playtest <challenge>
       Creates a build and instance of the challenge and then starts a simple

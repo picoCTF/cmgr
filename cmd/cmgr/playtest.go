@@ -179,13 +179,8 @@ func launchPortal(mgr *cmgr.Manager, iface string, port int, cid cmgr.ChallengeI
 	http.HandleFunc("/artifact/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Split(r.URL.Path, "/")
 		filename := path[len(path)-1]
-		artifactDir, ok := os.LookupEnv(cmgr.ARTIFACT_DIR_ENV)
-		if !ok {
-			artifactDir = "."
-		}
-
 		archiveFilename := fmt.Sprintf("%d.tar.gz", bid)
-		artifactArchive := filepath.Join(artifactDir, archiveFilename)
+		artifactArchive := filepath.Join(artifactDir(), archiveFilename)
 
 		artifactsFile, err := os.Open(artifactArchive)
 		if err != nil {

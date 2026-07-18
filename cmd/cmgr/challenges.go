@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/picoCTF/cmgr/cmgr"
@@ -59,6 +60,12 @@ func displayChallengeInfo(mgr *cmgr.Manager, args []string) int {
 		fmt.Printf("    Challenge Type: %s\n", cMeta.ChallengeType)
 		fmt.Printf("    Category: %s\n", cMeta.Category)
 		fmt.Printf("    Points: %d\n", cMeta.Points)
+		switch cMeta.DeliveryType {
+		case cmgr.DeliveryArtifactOnly:
+			fmt.Printf("    Delivery: artifacts only (no instance launched)\n")
+		case cmgr.DeliveryFlagOnly:
+			fmt.Printf("    Delivery: flag submission only (no instance launched)\n")
+		}
 
 		if *verbose {
 			fmt.Println("\n    Description:")
@@ -268,32 +275,66 @@ func printChallenges(challenges []*cmgr.ChallengeMetadata, verbose bool) {
 	}
 }
 
+// deliveryTag annotates a challenge line with its derived delivery type so
+// authors notice when a challenge was classified as something other than a
+// network service (e.g. a forgotten '# PUBLISH' silently derives artifact_only).
+func deliveryTag(md *cmgr.ChallengeMetadata) string {
+	if md.DeliveryType == "" || md.DeliveryType == cmgr.DeliveryService {
+		return ""
+	}
+	return fmt.Sprintf(" [%s]", md.DeliveryType)
+}
+
+func printDeliverySummary(status *cmgr.ChallengeUpdates) {
+	counts := make(map[cmgr.DeliveryType]int)
+	total := 0
+	for _, group := range [][]*cmgr.ChallengeMetadata{status.Unmodified, status.Added, status.Refreshed, status.Updated} {
+		for _, md := range group {
+			if md.DeliveryType != "" {
+				counts[md.DeliveryType]++
+				total++
+			}
+		}
+	}
+	if total == 0 {
+		return
+	}
+
+	parts := []string{}
+	for _, dt := range []cmgr.DeliveryType{cmgr.DeliveryService, cmgr.DeliveryArtifactOnly, cmgr.DeliveryFlagOnly} {
+		if counts[dt] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[dt], dt))
+		}
+	}
+	fmt.Printf("Delivery types: %s\n", strings.Join(parts, ", "))
+}
+
 func printChanges(status *cmgr.ChallengeUpdates, verbose bool) {
 	if verbose && len(status.Unmodified) != 0 {
 		fmt.Println("Unmodified:")
 		for _, md := range status.Unmodified {
-			fmt.Printf("    %s\n", md.Id)
+			fmt.Printf("    %s%s\n", md.Id, deliveryTag(md))
 		}
 	}
 
 	if len(status.Added) != 0 {
 		fmt.Println("Added:")
 		for _, md := range status.Added {
-			fmt.Printf("    %s\n", md.Id)
+			fmt.Printf("    %s%s\n", md.Id, deliveryTag(md))
 		}
 	}
 
 	if len(status.Refreshed) != 0 {
 		fmt.Println("Refreshed:")
 		for _, md := range status.Refreshed {
-			fmt.Printf("    %s\n", md.Id)
+			fmt.Printf("    %s%s\n", md.Id, deliveryTag(md))
 		}
 	}
 
 	if len(status.Updated) != 0 {
 		fmt.Println("Updated:")
 		for _, md := range status.Updated {
-			fmt.Printf("    %s\n", md.Id)
+			fmt.Printf("    %s%s\n", md.Id, deliveryTag(md))
 		}
 	}
 
@@ -303,6 +344,8 @@ func printChanges(status *cmgr.ChallengeUpdates, verbose bool) {
 			fmt.Printf("    %s\n", md.Id)
 		}
 	}
+
+	printDeliverySummary(status)
 
 	if len(status.Errors) != 0 {
 		fmt.Println("Errors:")
@@ -355,6 +398,30 @@ func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string
 		defer mgr.Destroy(build.Id)
 	}
 
+	// Non-service challenges (artifact-only, flag-only) have no runtime entry
+	// point, so no instance is started: the solver (if any) runs directly against
+	// the build and interactive output reports only the build.
+	if cMeta.DeliveryType != cmgr.DeliveryService {
+		if solve && cMeta.SolveScript {
+			err = mgr.CheckBuild(build.Id)
+			if err != nil {
+				fmt.Printf("error (%s): solver failed: %s\n", cMeta.Id, err)
+				return false
+			}
+		} else if solve && required {
+			fmt.Printf("error (%s): no solver found\n", cMeta.Id)
+			return false
+		} else if !solve {
+			// Third field stays numeric for scripts that parse "id|build|instance";
+			// 0 is never a real instance id and means "no instance for this build".
+			fmt.Printf("%s|%d|0\n", cMeta.Id, build.Id)
+			fmt.Printf("    delivery: %s (no instance)\n", cMeta.DeliveryType)
+			fmt.Printf("    flag: %s\n", build.Flag)
+			printBuildLookupAndArtifacts(build)
+		}
+		return true
+	}
+
 	// Start
 	instance, err := mgr.Start(build.Id, nil)
 	if err != nil {
@@ -386,20 +453,7 @@ func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string
 		fmt.Printf("%s|%d|%d\n", cMeta.Id, build.Id, instance)
 		fmt.Printf("    flag: %s\n", build.Flag)
 
-		if len(build.LookupData) > 0 {
-			fmt.Println("    lookup data:")
-			for k, v := range build.LookupData {
-				fmt.Printf("        %s: %s\b", k, v)
-			}
-		}
-
-		if build.HasArtifacts {
-			artDir, isSet := os.LookupEnv(cmgr.ARTIFACT_DIR_ENV)
-			if !isSet {
-				artDir = "."
-			}
-			fmt.Printf("    artifacts file: %s.tar.gz\n", filepath.Join(artDir, fmt.Sprint(build.Id)))
-		}
+		printBuildLookupAndArtifacts(build)
 
 		if len(iMeta.Ports) > 0 {
 			fmt.Println("    ports:")
@@ -410,4 +464,27 @@ func runTest(mgr *cmgr.Manager, cMeta *cmgr.ChallengeMetadata, flagFormat string
 	}
 
 	return true
+}
+
+// artifactDir returns the directory where cmgr stores artifact archives,
+// matching the fallback used by the cmgr library itself.
+func artifactDir() string {
+	dir, isSet := os.LookupEnv(cmgr.ARTIFACT_DIR_ENV)
+	if !isSet {
+		dir = "."
+	}
+	return dir
+}
+
+func printBuildLookupAndArtifacts(build *cmgr.BuildMetadata) {
+	if len(build.LookupData) > 0 {
+		fmt.Println("    lookup data:")
+		for k, v := range build.LookupData {
+			fmt.Printf("        %s: %s\n", k, v)
+		}
+	}
+
+	if build.HasArtifacts {
+		fmt.Printf("    artifacts file: %s.tar.gz\n", filepath.Join(artifactDir(), fmt.Sprint(build.Id)))
+	}
 }
