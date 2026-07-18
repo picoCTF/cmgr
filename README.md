@@ -185,9 +185,10 @@ challenges, are torn down on the next schema update or challenge rebuild.)
 An empty instance list on a `service` build with a *positive* `instance_count`
 indicates a deployment problem; on-demand builds (`instance_count` of -1)
 legitimately have zero instances whenever no user session is active.
-(`"flag_only"` is reserved for an upcoming challenge type and is never emitted
-today; payloads from older cmgr versions omit `delivery_type` entirely, in
-which case every build has instances as before.)
+(`"flag_only"` challenges — declared via the `flag-only` challenge type — are
+bare submission prompts whose builds carry only a flag and lookup data, with
+no artifacts; payloads from older cmgr versions omit `delivery_type` entirely,
+in which case every build has instances as before.)
 
 **Note:** Runtime env injection (`user_id` / `env`) is currently only exposed
 through the `cmgrd` REST API. The `cmgr` CLI commands (`start`, `playtest`,

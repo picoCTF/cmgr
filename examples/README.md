@@ -44,19 +44,23 @@ The `remote-make` challenge type will take a program that uses stdin/stdout to c
 
 The `static-make` challenge type has no network component and should be solvable solely by using the `artifacts.tar.gz` and `metadata.json` created during the build process.
 
+### flag-only
+
+The `flag-only` challenge type is for challenges that consist of nothing but a submission prompt: no service and no downloads (e.g. knowledge-check questions, or a second flag exported by a sibling challenge).  The build's only product is `metadata.json`.  A `Makefile` with a `metadata.json` target is optional — without one, the flag templated by `cmgr` is used as-is.  Providing a Makefile allows a static flag (such as the expected answer to a question) or extra lookup values referenced from the challenge text; since the `SEED` build argument is available, option lists can be shuffled per build and a sibling challenge built with the same seed can derive a matching flag.  See the [flag-only example](flag-only/) for a multiple-choice question.  Solve scripts do not apply to this type (the flag is the answer), so `cmgr test --require-solve` does not demand one.
+
 ## Delivery Types
 
 Independent of the challenge type above (which controls how a challenge is *built*), `cmgr` derives a `delivery_type` for every challenge that describes what competitors actually receive:
 
 - **`service`** — the challenge publishes at least one port (via `# PUBLISH`); a running container serves competitors.  Whether it runs as a shared persistent instance or on-demand per user is decided by the schema's `instance_count`, not by the challenge.
 - **`artifact_only`** — the challenge publishes no ports; the `artifacts.tar.gz` produced at build time is the entire challenge and no running container is needed.  All `static-make` challenges are artifact-only, as is any `custom` challenge without a `# PUBLISH` directive.
-- **`flag_only`** — reserved for an upcoming challenge type for bare flag-submission challenges (no ports, no artifacts); not yet available.
+- **`flag_only`** — the challenge is a bare submission prompt (no ports, no artifacts); declared with the `flag-only` challenge type described above.
 
 This value is derived from the Dockerfile — authors never write it, and it is reported through the `cmgrd` API so front-ends can distinguish these cases explicitly.
 
 Two things follow from this that challenge authors should know:
 
-- A challenge that publishes no ports **should** produce a non-empty `artifacts.tar.gz`; if it produces neither, the build logs a warning since this usually indicates a forgotten `# PUBLISH` directive (description-only challenges that build solely to generate a flag are the exception, and will eventually declare this via a dedicated challenge type).  `cmgr update` also tags each non-service challenge with its delivery type and prints a summary, so an unexpectedly artifact-only challenge is visible before deployment.
+- A challenge that publishes no ports **should** produce a non-empty `artifacts.tar.gz`; if it produces neither, the build logs a warning since this usually indicates a forgotten `# PUBLISH` directive — intentional cases should use the `flag-only` challenge type instead, which is exempt from the warning.  `cmgr update` also tags each non-service challenge with its delivery type and prints a summary, so an unexpectedly artifact-only challenge is visible before deployment.
 - Solvers for artifact-only challenges run against the build's artifacts directly (on Docker's default network — no `challenge` host, outbound access preserved) rather than alongside a running instance, and `cmgr test` skips the start/stop steps for them.
 - cmgr never launches instances for non-service challenges, so custom artifact-only Dockerfiles do not need an entrypoint.  A leftover placeholder (e.g. `CMD tail -f /dev/null`) from older challenge content is harmless — it is simply never run.
 

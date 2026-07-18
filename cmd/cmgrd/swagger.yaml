@@ -368,12 +368,12 @@ definitions:
           empty instance list on a build whose challenge is "service" AND
           whose instance_count is positive indicates a deployment problem;
           on-demand builds (instance_count -1) legitimately have zero
-          instances between user sessions. "flag_only" is reserved for an
-          upcoming challenge type (neither ports nor artifacts; the build
-          exists only to generate a flag and lookup data for a bare
-          submission prompt) and is never emitted by current cmgr. Absent
-          field = pre-delivery_type cmgr, which launches instances for every
-          build.
+          instances between user sessions. "flag_only" challenges (declared
+          via the "flag-only" challenge type) publish neither ports nor
+          artifacts; the build exists only to generate a flag and lookup data
+          for a bare submission prompt, so front-ends should render only a
+          submission field for them. Absent field = pre-delivery_type cmgr,
+          which launches instances for every build.
       builds:
         type: array
         items:
