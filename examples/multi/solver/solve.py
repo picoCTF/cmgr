@@ -38,19 +38,20 @@ command = (
 
 s = ssh.ssh(host="work", user=md["username"], password=md["password"])
 # ssh.system() execs the command like `ssh host command` — no remote Python
-# interpreter required (unlike run_to_end/process).  Read only up to the
-# fenced flag rather than waiting for the whole command to finish.
+# interpreter required (unlike run_to_end/process).  Empty apt sources mean the
+# command exits promptly, so recvall (bounded by a timeout) returns the whole
+# output without hanging on a network fetch.
 io = s.system(command)
-# Bounded reads so a broken exploit (e.g. the privesc no longer fires) fails
-# with a clear error instead of hanging on the default infinite timeout.
-if not io.recvuntil(MARKER.encode(), timeout=90):
-    io.close()
-    s.close()
-    raise RuntimeError("no privilege-escalation output; the exploit did not run")
-raw = io.recvuntil(MARKER.encode(), timeout=90)
+output = io.recvall(timeout=90)
 io.close()
 s.close()
-flag = raw.split(MARKER.encode())[0].strip().decode()
+
+# Require both fences: a broken exploit (privesc no longer fires, no marker in
+# the output) then raises a clear error instead of writing garbage to `flag`.
+parts = output.split(MARKER.encode())
+if len(parts) < 3:
+    raise RuntimeError("no marker-fenced flag in output; the exploit did not run")
+flag = parts[1].strip().decode()
 
 with open("flag", "w") as f:
     f.write(flag)
