@@ -177,11 +177,11 @@ restarted automatically as before.
 **Note:** Challenge metadata includes a derived `delivery_type` field
 (`"service"`, `"artifact_only"`, or `"flag_only"`) describing what competitors
 receive: a running network service, only downloadable build artifacts, or only
-a flag-submission prompt, respectively.  Front-ends should treat an empty
-instance list on a build as expected whenever its challenge's `delivery_type`
-is not `"service"`.  The reverse does not yet hold: cmgr currently still
-launches placeholder instances for artifact-only challenges in schemas, and a
-future release will stop doing so — front-ends should tolerate both states.
+a flag-submission prompt, respectively.  Only `service` challenges run
+instances: builds of non-service challenges always report an empty instance
+list, and requests to start an instance of them fail.  (Instances left over
+from older cmgr versions, which still launched placeholders for artifact-only
+challenges, are torn down on the next schema update or challenge rebuild.)
 An empty instance list on a `service` build with a *positive* `instance_count`
 indicates a deployment problem; on-demand builds (`instance_count` of -1)
 legitimately have zero instances whenever no user session is active.
