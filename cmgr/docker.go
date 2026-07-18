@@ -429,7 +429,11 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 		return err
 	}
 
-	cConfig := container.Config{Image: buildImage}
+	// This container is created only to copy the built /challenge tree out of the
+	// image; it is never started. Override the command so creation succeeds even
+	// for images with no CMD/ENTRYPOINT (e.g. artifact-only custom Dockerfiles),
+	// which Docker otherwise rejects with "no command specified".
+	cConfig := container.Config{Image: buildImage, Cmd: []string{"true"}}
 	hConfig := container.HostConfig{}
 	nConfig := network.NetworkingConfig{}
 
