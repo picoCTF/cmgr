@@ -64,7 +64,7 @@ func (m *Manager) runSolver(instance InstanceId) error {
 // this area is next touched: a DeliveryType/empty-flag guard, a deadline on
 // executeSolver's ContainerWait, moving the exported method to api.go with the
 // rest of the public surface, and a cmgrd route so REST consumers can check
-// non-service builds once they no longer have instances.
+// non-service builds, which have no instances to run CheckInstance against.
 func (m *Manager) CheckBuild(build BuildId) error {
 	bMeta, err := m.lookupBuildMetadata(build)
 	if err != nil {
