@@ -41,10 +41,16 @@ s = ssh.ssh(host="work", user=md["username"], password=md["password"])
 # interpreter required (unlike run_to_end/process).  Read only up to the
 # fenced flag rather than waiting for the whole command to finish.
 io = s.system(command)
-io.recvuntil(MARKER.encode())
-flag = io.recvuntil(MARKER.encode())[: -len(MARKER)].strip().decode()
+# Bounded reads so a broken exploit (e.g. the privesc no longer fires) fails
+# with a clear error instead of hanging on the default infinite timeout.
+if not io.recvuntil(MARKER.encode(), timeout=90):
+    io.close()
+    s.close()
+    raise RuntimeError("no privilege-escalation output; the exploit did not run")
+raw = io.recvuntil(MARKER.encode(), timeout=90)
 io.close()
 s.close()
+flag = raw.split(MARKER.encode())[0].strip().decode()
 
 with open("flag", "w") as f:
     f.write(flag)
