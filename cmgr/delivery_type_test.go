@@ -2,6 +2,8 @@ package cmgr
 
 import (
 	"testing"
+
+	"github.com/picoCTF/cmgr/cmgr/dockerfiles"
 )
 
 // TestDeriveDeliveryType covers the single source of truth for delivery-type
@@ -29,6 +31,20 @@ func TestDeriveDeliveryType(t *testing.T) {
 		if got != c.want {
 			t.Errorf("deriveDeliveryType(%q, %d) = %q, want %q", c.challengeType, c.ports, got, c.want)
 		}
+	}
+}
+
+// TestFlagOnlyTypeRegistered guards the pairing between the "flag-only"
+// literal in deriveDeliveryType and the embedded Dockerfile registering the
+// challenge type of the same name: renaming either side without the other
+// would silently misclassify flag-only challenges.
+func TestFlagOnlyTypeRegistered(t *testing.T) {
+	df, err := dockerfiles.Get("flag-only")
+	if err != nil || len(df) == 0 {
+		t.Fatalf("no embedded Dockerfile registers the 'flag-only' challenge type (err: %v)", err)
+	}
+	if got := deriveDeliveryType("flag-only", 0); got != DeliveryFlagOnly {
+		t.Errorf("deriveDeliveryType(\"flag-only\", 0) = %q, want %q", got, DeliveryFlagOnly)
 	}
 }
 
