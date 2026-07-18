@@ -238,6 +238,13 @@ func (s state) buildHandler(w http.ResponseWriter, r *http.Request) {
 	pathLen := len(path)
 
 	if pathLen == 4 {
+		// POST runs the solver against the build (non-service challenges have
+		// no instance to check); any other method falls through to artifact
+		// retrieval so an artifact named "check" stays reachable via GET.
+		if path[pathLen-1] == "check" && r.Method == "POST" {
+			s.buildCheckHandler(w, r)
+			return
+		}
 		s.artifactsHandler(w, r)
 		return
 	}
@@ -306,6 +313,32 @@ func (s state) buildHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err != nil {
+		respCode = http.StatusInternalServerError
+		if _, ok := err.(*cmgr.UnknownIdentifierError); ok {
+			respCode = http.StatusNotFound
+		}
+		body = []byte(err.Error())
+	}
+
+	w.WriteHeader(respCode)
+	w.Write(body)
+}
+
+func (s state) buildCheckHandler(w http.ResponseWriter, r *http.Request) {
+	path := strings.Split(r.URL.Path, "/")
+	pathLen := len(path)
+
+	buildInt, err := strconv.Atoi(path[pathLen-2])
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	var body []byte
+	respCode := http.StatusNoContent
+	err = s.mgr.CheckBuild(cmgr.BuildId(buildInt))
 	if err != nil {
 		respCode = http.StatusInternalServerError
 		if _, ok := err.(*cmgr.UnknownIdentifierError); ok {

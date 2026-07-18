@@ -352,6 +352,25 @@ func (m *Manager) CheckInstance(instance InstanceId) error {
 	return m.runSolver(instance)
 }
 
+// Runs the automated solver against the designated build without an instance.
+// Only valid for non-service challenges (artifact-only, flag-only), whose
+// solvers consume the build's outputs and never connect to a challenge host;
+// service builds are rejected because their instances are checked with
+// `CheckInstance` instead.
+func (m *Manager) CheckBuild(build BuildId) error {
+	bMeta, err := m.lookupBuildMetadata(build)
+	if err != nil {
+		return err
+	}
+
+	cMeta, err := m.lookupChallengeMetadata(bMeta.Challenge)
+	if err != nil {
+		return err
+	}
+
+	return m.checkBuild(cMeta, bMeta)
+}
+
 // Obtains a list of challenges with minimal version information filled into
 // the metadata object.
 func (m *Manager) ListChallenges() []*ChallengeMetadata {

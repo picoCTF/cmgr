@@ -3,6 +3,7 @@ package cmgr
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,11 @@ import (
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
+
+// solverTimeout bounds how long a solver container may run before the check
+// fails; without it a hung solver blocks the caller forever. Generous because
+// solvers legitimately compile tooling and brute-force at runtime.
+const solverTimeout = 10 * time.Minute
 
 // runSolver builds and runs the challenge's solver against a running instance,
 // attaching the solver to that instance's network, and records the solve on
@@ -42,7 +48,7 @@ func (m *Manager) runSolver(instance InstanceId) error {
 		return fmt.Errorf("no solve script for '%s'", cMeta.Id)
 	}
 
-	err = m.executeSolver(bMeta, iMeta.getNetworkName())
+	err = m.executeSolver(cMeta, bMeta, iMeta.getNetworkName())
 	if err != nil {
 		return err
 	}
@@ -51,36 +57,22 @@ func (m *Manager) runSolver(instance InstanceId) error {
 	return m.recordSolve(iMeta)
 }
 
-// CheckBuild builds and runs the challenge's solver against a build that has no
+// checkBuild builds and runs the challenge's solver against a build that has no
 // running instance, on Docker's default network (outbound access, but no
 // challenge host), and records the solve against the build on success. This
 // supports non-service challenges (artifact-only, flag-only), whose solver
-// consumes only the build's outputs and never connects to a challenge host.
-//
-// TODO(optimization): callers typically already hold the build and challenge
-// metadata this re-fetches (plus createSolveContext repeats the challenge
-// lookup internally — ~3 redundant read transactions per call); a
-// metadata-accepting variant would remove those. Also worth folding in when
-// this area is next touched: a DeliveryType/empty-flag guard, a deadline on
-// executeSolver's ContainerWait, moving the exported method to api.go with the
-// rest of the public surface, and a cmgrd route so REST consumers can check
-// non-service builds, which have no instances to run CheckInstance against.
-func (m *Manager) CheckBuild(build BuildId) error {
-	bMeta, err := m.lookupBuildMetadata(build)
-	if err != nil {
-		return err
-	}
-
-	cMeta, err := m.lookupChallengeMetadata(bMeta.Challenge)
-	if err != nil {
-		return err
+// consumes only the build's outputs and never connects to a challenge host;
+// service builds are rejected because their solvers expect a challenge host.
+func (m *Manager) checkBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata) error {
+	if cMeta.NeedsInstance() {
+		return fmt.Errorf("'%s' is a service challenge: start an instance and check that instead", cMeta.Id)
 	}
 
 	if !cMeta.SolveScript {
 		return fmt.Errorf("no solve script for '%s'", cMeta.Id)
 	}
 
-	err = m.executeSolver(bMeta, "")
+	err := m.executeSolver(cMeta, bMeta, "")
 	if err != nil {
 		return err
 	}
@@ -95,8 +87,15 @@ func (m *Manager) CheckBuild(build BuildId) error {
 // otherwise it runs on Docker's default network with no challenge host. Returns
 // nil only when the solver recovers the correct flag; recording the solve is left
 // to the caller.
-func (m *Manager) executeSolver(bMeta *BuildMetadata, netname string) error {
-	solveCtx := m.createSolveContext(bMeta)
+func (m *Manager) executeSolver(cMeta *ChallengeMetadata, bMeta *BuildMetadata, netname string) error {
+	// The solver's output is compared against this flag, so an empty flag would
+	// let a solver "succeed" by writing an empty file; treat it as an authoring
+	// error rather than a solve.
+	if bMeta.Flag == "" {
+		return fmt.Errorf("build %d of '%s' has an empty flag", bMeta.Id, cMeta.Id)
+	}
+
+	solveCtx := m.createSolveContext(cMeta, bMeta)
 
 	imageName := fmt.Sprintf("%s/%s:%d", bMeta.Challenge, "solver", bMeta.Id)
 	opts := client.ImageBuildOptions{Remove: true, Tags: []string{imageName}}
@@ -179,9 +178,16 @@ func (m *Manager) executeSolver(bMeta *BuildMetadata, netname string) error {
 		return err
 	}
 
-	waitRes := m.cli.ContainerWait(m.ctx, cid, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
+	// Bound the wait so a hung solver cannot block forever; the deferred
+	// force-remove above kills the container if the deadline fires.
+	waitCtx, cancel := context.WithTimeout(m.ctx, solverTimeout)
+	defer cancel()
+	waitRes := m.cli.ContainerWait(waitCtx, cid, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
 	select {
 	case err := <-waitRes.Error:
+		if waitCtx.Err() != nil {
+			err = fmt.Errorf("solver container did not exit within %s", solverTimeout)
+		}
 		m.log.errorf("failed to wait on solve container: %s", err)
 		return err
 	case _ = <-waitRes.Result:
@@ -238,21 +244,16 @@ func (m *Manager) executeSolver(bMeta *BuildMetadata, netname string) error {
 	return errors.New("failed to process flag results properly")
 }
 
-func (m *Manager) createSolveContext(meta *BuildMetadata) io.Reader {
+func (m *Manager) createSolveContext(cMeta *ChallengeMetadata, meta *BuildMetadata) io.Reader {
 	r, w := io.Pipe()
 	ctx := tar.NewWriter(w)
 
 	customDocker := false
 
 	go func() {
-		cMeta, err := m.lookupChallengeMetadata(meta.Challenge)
-		if err != nil {
-			w.CloseWithError(err)
-		}
-
 		// Copy in contents of the "solver" directory
 		solveDir := filepath.Join(filepath.Dir(cMeta.Path), "solver")
-		err = filepath.Walk(solveDir, func(path string, info os.FileInfo, err error) error {
+		err := filepath.Walk(solveDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
 			}
