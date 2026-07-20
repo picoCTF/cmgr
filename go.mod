@@ -12,7 +12,7 @@ require (
 	github.com/moby/moby/api v1.55.0
 	github.com/moby/moby/client v0.5.0
 	github.com/yuin/goldmark v1.8.4
-	golang.org/x/net v0.56.0
+	golang.org/x/net v0.57.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
@@ -36,5 +36,5 @@ require (
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/metric v1.41.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )
