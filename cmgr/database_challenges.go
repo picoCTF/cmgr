@@ -340,7 +340,30 @@ func (m *Manager) addChallenges(addedChallenges []*ChallengeMetadata) []error {
 	return errs
 }
 
-func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebuild bool) []error {
+// rotatedPrevChecksum returns the rollback generation to retain after a
+// rebuild. When the content changed (newChecksum != oldChecksum) the generation
+// just replaced (oldChecksum) becomes the new rollback target; otherwise the
+// existing target (currentPrev) is left untouched, so a no-op rebuild does not
+// disturb retention.
+func rotatedPrevChecksum(oldChecksum, newChecksum, currentPrev uint32) uint32 {
+	if newChecksum != oldChecksum {
+		return oldChecksum
+	}
+	return currentPrev
+}
+
+// displacedPruneCandidate reports whether a rebuild displaced an image
+// generation that '--prune-old' should untag: the content actually changed
+// (newChecksum != oldChecksum), there was a prior rollback generation to
+// displace (displaced != 0), and that displaced generation is not the same
+// content as the just-rebuilt one. The last clause guards an A->B->A
+// flip-flop, where the displaced generation equals the new current generation
+// and must therefore be kept, not pruned.
+func displacedPruneCandidate(oldChecksum, newChecksum, displaced uint32) bool {
+	return newChecksum != oldChecksum && displaced != 0 && displaced != newChecksum
+}
+
+func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebuild bool, pruneOldImages bool) []error {
 	errs := []error{}
 	for _, metadata := range updatedChallenges {
 		txn := m.db.MustBegin()
@@ -620,6 +643,7 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 				}
 				defer os.Remove(buildCtxFile)
 
+				replaced := []replacedImages{}
 				for _, buildId := range buildIds {
 					build, err := m.lookupBuildMetadata(buildId)
 					if err != nil {
@@ -632,6 +656,13 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 						continue
 					}
 
+					// Capture the retention pair before executeBuild stamps the
+					// new content checksum: the current generation becomes the
+					// retained rollback target (PrevChecksum) and the old
+					// rollback generation is displaced from retention.
+					oldChecksum := build.Checksum
+					displaced := build.PrevChecksum
+
 					// Resetting the flag signals to rebuild the Dockerfile
 					build.Flag = ""
 					err = m.executeBuild(metadata, build, buildCtxFile)
@@ -639,6 +670,16 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 						errs = append(errs, err)
 						continue
 					}
+
+					// Rotate the retention pair; a rebuild that reproduced the
+					// same content checksum leaves the rollback target untouched.
+					// Caveat: a checksum-stable but content-changing rebuild (a
+					// challenge-type change, or a cmgr release with a different
+					// built-in Dockerfile — see contentChecksum) is not rotated,
+					// so its displaced image is left dangling rather than
+					// retained; that class falls outside the {current, previous}
+					// retention guarantee.
+					build.PrevChecksum = rotatedPrevChecksum(oldChecksum, build.Checksum, build.PrevChecksum)
 
 					// Update database
 					err = m.finalizeBuild(build)
@@ -687,7 +728,33 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 							errs = append(errs, err)
 						}
 					}
+
+					// The displaced generation (two rebuilds back) leaves
+					// retention; the just-replaced one survives as the
+					// rollback target. Its tags are reconstructed over the
+					// current host set — a generation built with different
+					// hosts leaves strays for a future sweep to reclaim.
+					if pruneOldImages && displacedPruneCandidate(oldChecksum, build.Checksum, displaced) {
+						displacedMeta := BuildMetadata{
+							Challenge: build.Challenge,
+							Seed:      build.Seed,
+							Format:    build.Format,
+							Checksum:  displaced,
+						}
+						tags := make([]string, 0, len(build.Images))
+						for _, image := range build.Images {
+							tags = append(tags, fmt.Sprintf("%s:%s", build.Challenge, displacedMeta.dockerId(image)))
+						}
+						replaced = append(replaced, replacedImages{tags: tags, meta: displacedMeta})
+					}
 				}
+
+				// Pruning waits until every build of this challenge has been
+				// processed: other rows can still hold the displaced checksum
+				// as their current or rollback generation until their own
+				// rebuild lands (or if it failed above) — contentReferenced
+				// keeps the images alive in all of those cases.
+				m.pruneReplacedImages(replaced)
 			}
 		}
 	}

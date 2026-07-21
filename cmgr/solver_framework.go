@@ -97,7 +97,17 @@ func (m *Manager) executeSolver(cMeta *ChallengeMetadata, bMeta *BuildMetadata, 
 	solveCtx := m.createSolveContext(cMeta, bMeta)
 
 	imageName := fmt.Sprintf("%s/%s:%d", bMeta.Challenge, "solver", bMeta.Id)
-	opts := client.ImageBuildOptions{Remove: true, Tags: []string{imageName}}
+	opts := client.ImageBuildOptions{
+		Remove: true,
+		Tags:   []string{imageName},
+		// Label solver images like challenge and base images (see executeBuild,
+		// freezeBaseImage) so every image cmgr builds is discoverable by a
+		// future label-based orphan sweep.
+		Labels: map[string]string{
+			"cmgr.managed":   "true",
+			"cmgr.challenge": string(cMeta.Id),
+		},
+	}
 
 	// Build the base image (will run the solver)
 	resp, err := m.cli.ImageBuild(m.ctx, solveCtx, opts)

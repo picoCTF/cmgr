@@ -93,6 +93,7 @@ func updateChallengeInfo(mgr *cmgr.Manager, args []string) int {
 	updateUsage(parser, "[<path>]")
 	verbose := parser.Bool("verbose", false, "print more information")
 	dryRun := parser.Bool("dry-run", false, "run the validation logic without updating the database or builds")
+	pruneOld := parser.Bool("prune-old", false, "untag the image generation each rebuild displaces from its rollback slot (only what this update displaces, not older strays; off by default in case another cmgr instance on this docker daemon references it)")
 	parser.Parse(args)
 
 	if parser.NArg() > 1 {
@@ -114,7 +115,7 @@ func updateChallengeInfo(mgr *cmgr.Manager, args []string) int {
 	if *dryRun {
 		updates = mgr.DetectChanges(path)
 	} else {
-		updates = mgr.Update(path)
+		updates = mgr.UpdateWithOptions(path, cmgr.UpdateOptions{PruneOldImages: *pruneOld})
 	}
 
 	printChanges(updates, *verbose)

@@ -125,6 +125,21 @@ func (m *Manager) DetectChanges(fp string) *ChallengeUpdates {
 	return cu
 }
 
+// UpdateOptions adjusts the behavior of `UpdateWithOptions`.
+type UpdateOptions struct {
+	// PruneOldImages untags the image generation a rebuild displaces from its
+	// rollback slot: each build keeps its new images plus the generation it
+	// just replaced (the rollback target, see BuildMetadata.PrevChecksum), and
+	// the one pushed beyond that is untagged after all of the challenge's builds
+	// are processed. Only generations displaced by THIS update are removed —
+	// generations orphaned by earlier updates that ran without this flag are
+	// not tracked and are not reclaimed here. Off by default: a tag can be
+	// referenced outside this cmgr database (e.g. another cmgr instance on the
+	// same docker daemon that built identical content), and cmgr cannot see
+	// those references.
+	PruneOldImages bool
+}
+
 // This will update the global system state based off the changes that are
 // detected by a call to `DetectChanges`.  Specifically, in addition to
 // updating challenge metadata (new and existing) it will rebuild and, if
@@ -139,18 +154,24 @@ func (m *Manager) DetectChanges(fp string) *ChallengeUpdates {
 // perform any removals of challenge metadata (removing a built challenge is
 // considered an error).
 func (m *Manager) Update(fp string) *ChallengeUpdates {
+	return m.UpdateWithOptions(fp, UpdateOptions{})
+}
+
+// UpdateWithOptions is identical to Update but takes explicit options; Update
+// is equivalent to calling this with the zero-value UpdateOptions.
+func (m *Manager) UpdateWithOptions(fp string, options UpdateOptions) *ChallengeUpdates {
 	cu := m.DetectChanges(fp)
 	errs := m.addChallenges(cu.Added)
 	if len(errs) != 0 {
 		cu.Errors = append(cu.Errors, errs...)
 	}
 
-	errs = m.updateChallenges(cu.Refreshed, false)
+	errs = m.updateChallenges(cu.Refreshed, false, false)
 	if len(errs) != 0 {
 		cu.Errors = append(cu.Errors, errs...)
 	}
 
-	errs = m.updateChallenges(cu.Updated, true)
+	errs = m.updateChallenges(cu.Updated, true, options.PruneOldImages)
 	if len(errs) != 0 {
 		cu.Errors = append(cu.Errors, errs...)
 	}

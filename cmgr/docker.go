@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/ioutil"
 	"net/netip"
@@ -23,6 +25,7 @@ import (
 	"github.com/containerd/errdefs"
 	dockeropts "github.com/docker/cli/opts"
 	"github.com/docker/go-units"
+	"github.com/jmoiron/sqlx"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/strslice"
@@ -165,29 +168,61 @@ func (m *Manager) generateBuilds(builds []*BuildMetadata) error {
 	for _, build := range builds {
 		buildsComplete = buildsComplete && (build.Flag != "")
 	}
-	if buildsComplete {
-		return nil
-	}
 
 	cMeta, err := m.lookupChallengeMetadata(builds[0].Challenge)
 	if err != nil {
 		return err
 	}
 
+	// Note: DetectChanges re-parses and re-hashes the challenge directory on
+	// every converge, even when all builds are already complete (below). That
+	// cost is inherent to detecting drift here; it is paid per challenge on each
+	// CreateSchema/UpdateSchema (e.g. cmgrd instance-count resizes). If it
+	// becomes a bottleneck for large schemas, compare only this challenge's
+	// stored SourceChecksum instead of running a full cross-schema DetectChanges.
 	updates := m.DetectChanges(filepath.Dir(cMeta.Path))
+
+	inList := func(list []*ChallengeMetadata) bool {
+		for _, md := range list {
+			if md.Id == cMeta.Id {
+				return true
+			}
+		}
+		return false
+	}
+	// The buckets are distinct: only Updated implies changed image content (and
+	// hence stale images); Refreshed is a metadata/solve-script change with the
+	// source checksum unchanged, so its images are current. modified drives the
+	// pending-build error path below (anything not Unmodified is drift).
+	sourceChanged := inList(updates.Updated)
+	metadataChanged := inList(updates.Refreshed)
+	removed := inList(updates.Removed)
+	modified := sourceChanged || metadataChanged || removed
+
+	if buildsComplete {
+		// Nothing to build, but surface drift instead of returning silently:
+		// converging a schema neither rebuilds nor refreshes existing builds —
+		// only 'update' does — so name whatever 'update' would act on, without
+		// overstating staleness for a metadata-only change.
+		switch {
+		case len(updates.Errors) > 0:
+			m.log.warnf("errors detected in directory for '%s'; run 'update': %v", cMeta.Id, updates.Errors)
+		case sourceChanged:
+			m.log.warnf("source for '%s' has changed since last update; existing builds and images are stale until 'update' is run", cMeta.Id)
+		case metadataChanged:
+			m.log.warnf("metadata for '%s' has changed since last update; run 'update' to refresh it (images are unaffected)", cMeta.Id)
+		case removed:
+			m.log.warnf("source for '%s' can no longer be found; its existing builds are stale", cMeta.Id)
+		}
+		return nil
+	}
+
 	if len(updates.Errors) > 0 {
 		err = fmt.Errorf("errors detected in directory for '%s' run 'update'", cMeta.Id)
 		m.log.error(err)
 		return err
 	}
 
-	modified := true
-	for _, md := range updates.Unmodified {
-		if md.Id == cMeta.Id {
-			modified = false
-			break
-		}
-	}
 	if modified {
 		err = fmt.Errorf("'%s' has changed since last update", cMeta.Id)
 		m.log.error(err)
@@ -250,8 +285,152 @@ func dockerStreamError(messages []byte) error {
 	return errors.New(string(errMsg))
 }
 
+// contentChecksum derives the content identity of a build's images from the
+// challenge source checksum and the flag format. The source content reaches
+// the image through the build context (and the frozen base image); the flag
+// format enters as a build arg. The seed also affects image content but is
+// carried explicitly in the docker tag, so it is not folded in here.
+//
+// Caveat: the embedded per-type Dockerfile (m.GetDockerfile) is part of the
+// build context but NOT part of this checksum. So a rebuild whose only change
+// is the challenge type, or a cmgr release shipping a different built-in
+// Dockerfile (e.g. a base-image bump), yields different image content under an
+// unchanged tag. Within one database this is just the tag reuse the scheme
+// already tolerates; across databases sharing a daemon it means identical
+// tuples can resolve to differing content. Folding the type Dockerfile (or a
+// build-machinery version) in here would close that, but the migration
+// backfill cannot reconstruct a legacy row's historical Dockerfile, so it is
+// deferred.
+func contentChecksum(sourceChecksum uint32, format string) uint32 {
+	h := crc32.NewIEEE()
+	var src [4]byte
+	binary.BigEndian.PutUint32(src[:], sourceChecksum)
+	h.Write(src[:])
+	h.Write([]byte(format))
+	sum := h.Sum32()
+	// 0 is reserved as the "unset / not-yet-migrated" sentinel: builds.checksum
+	// and prevchecksum default to 0, the migration backfill keys on checksum=0,
+	// and prevchecksum=0 means "no rollback generation". CRC-32 can legitimately
+	// be 0 (e.g. sourceChecksum 0x05f16712 with format "flag{%s}"), which would
+	// make a real generation indistinguishable from "none", so map that single
+	// value to 1. This adds only the same negligible collision the CRC already
+	// permits.
+	if sum == 0 {
+		sum = 1
+	}
+	return sum
+}
+
+// dockerId is the docker tag for one of the build's images. It is derived
+// from portable build identity — seed plus content checksum — rather than the
+// local autoincrement build id, so the same challenge content yields the same
+// tag no matter which cmgr database built it, and a source change yields a
+// new tag instead of mutating the old one. The "s" prefix keeps the tag valid
+// when the seed is negative.
 func (bMeta *BuildMetadata) dockerId(image Image) string {
-	return fmt.Sprintf("%d-%s", bMeta.Id, image.Host)
+	return fmt.Sprintf("s%d-%x-%s", bMeta.Seed, bMeta.Checksum, image.Host)
+}
+
+// migrateBuildChecksums backfills builds.checksum for rows still at the default
+// value (0) and retags their local docker images from the legacy {buildid}-{host}
+// tag form to the content-addressed form (see dockerId). The backfill derives
+// each build's checksum from its challenge's current source checksum, which is
+// what the images were built from as of the last update — the same assumption
+// the pre-checksum code made when it reused a tag across rebuilds.
+//
+// It is resumable and idempotent: the work is keyed on checksum=0 (the
+// "not yet migrated" marker) rather than on the column's existence, and each
+// row's images are retagged BEFORE its checksum is stamped, so an interruption
+// or transient docker error leaves the row at 0 to be retried on the next
+// start. Called from initDatabase before m.db is assigned, so the handle is
+// passed in explicitly; m.cli is nil when the database is initialized without
+// docker (tests), in which case retagging is skipped.
+func (m *Manager) migrateBuildChecksums(db *sqlx.DB) error {
+	rows := []struct {
+		Id             BuildId
+		Seed           int
+		Format         string
+		Challenge      string
+		SourceChecksum uint32 `db:"sourcechecksum"`
+	}{}
+	err := db.Select(&rows, `SELECT b.id, b.seed, b.format, b.challenge, c.sourcechecksum
+		FROM builds AS b JOIN challenges AS c ON b.challenge = c.id
+		WHERE b.checksum = 0;`)
+	if err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		checksum := contentChecksum(row.SourceChecksum, row.Format)
+
+		// Retag first: checksum=0 is the resume marker, so it is stamped only
+		// once the images provably carry the new tag (or are shown to need no
+		// retag). A genuine docker error aborts, leaving the row at 0.
+		if err := m.retagLegacyImages(db, row.Id, row.Challenge, row.Seed, checksum); err != nil {
+			return err
+		}
+
+		if _, err := db.Exec("UPDATE builds SET checksum = ? WHERE id = ?;", checksum, row.Id); err != nil {
+			return err
+		}
+	}
+
+	// Rows that never joined a challenge (e.g. out-of-band DB edits with foreign
+	// keys off) stay at checksum=0 and would yield an invalid s{seed}-0 tag;
+	// surface them rather than failing silently at launch time.
+	var unmigrated int
+	if err := db.Get(&unmigrated, "SELECT COUNT(1) FROM builds WHERE checksum = 0;"); err != nil {
+		return err
+	}
+	if unmigrated > 0 {
+		m.log.warnf("%d build(s) have no content checksum (missing challenge row?); their images cannot be resolved until the challenge is rebuilt", unmigrated)
+	}
+
+	return nil
+}
+
+// retagLegacyImages moves a build's images from the legacy {challenge}:{id}-{host}
+// tag form to the content-addressed {challenge}:s{seed}-{checksum}-{host} form.
+// It is idempotent and tolerant of a missing source image (already retagged on
+// a prior interrupted run, or a fresh daemon that will rebuild on demand): only
+// a genuine daemon error is returned, so migrateBuildChecksums can defer
+// stamping the checksum until the retag has succeeded or been shown
+// unnecessary. Skipped without a docker client (tests).
+func (m *Manager) retagLegacyImages(db *sqlx.DB, id BuildId, challenge string, seed int, checksum uint32) error {
+	if m.cli == nil {
+		return nil
+	}
+
+	hosts := []string{}
+	if err := db.Select(&hosts, "SELECT host FROM images WHERE build = ?;", id); err != nil {
+		return err
+	}
+
+	newMeta := BuildMetadata{Seed: seed, Checksum: checksum}
+	for _, host := range hosts {
+		oldRef := fmt.Sprintf("%s:%d-%s", challenge, id, host)
+		newRef := fmt.Sprintf("%s:%s", challenge, newMeta.dockerId(Image{Host: host}))
+
+		if _, err := m.cli.ImageTag(m.ctx, client.ImageTagOptions{Source: oldRef, Target: newRef}); err != nil {
+			if !errdefs.IsNotFound(err) {
+				// A real daemon error, not a missing image: abort so the row
+				// stays at checksum=0 and the retag is retried next start.
+				return fmt.Errorf("could not retag legacy image %s as %s: %w", oldRef, newRef, err)
+			}
+			// Source absent: either already retagged (new ref present) or never
+			// present locally (fresh daemon / pruned out-of-band). Nothing to
+			// recover; the next rebuild recreates it under the new name.
+			m.log.debugf("legacy image %s not present; skipping retag", oldRef)
+			continue
+		}
+		// Drop the legacy ref; the image survives under the new one. A missing
+		// legacy tag here is fine (idempotent re-run after a prior removal).
+		if _, err := m.cli.ImageRemove(m.ctx, oldRef, client.ImageRemoveOptions{Force: false, PruneChildren: false}); err != nil && !errdefs.IsNotFound(err) {
+			m.log.warnf("could not remove legacy image tag %s: %s", oldRef, err)
+		}
+		m.log.infof("retagged image %s as %s", oldRef, newRef)
+	}
+	return nil
 }
 
 func challengeToFreezeName(challenge ChallengeId) string {
@@ -290,6 +469,10 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 		Target:     "base",
 		NoCache:    force, // Require to use latest info on force
 		PullParent: force, // Update parent image as well on force
+		Labels: map[string]string{
+			"cmgr.managed":   "true",
+			"cmgr.challenge": string(challenge),
+		},
 	}
 
 	// Build the image
@@ -345,6 +528,10 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 
 	seedStr := fmt.Sprintf("%d", bMeta.Seed)
 
+	// Stamp the build with the content identity its images are about to be
+	// produced from; dockerId (and therefore every tag below) depends on it.
+	bMeta.Checksum = contentChecksum(cMeta.SourceChecksum, bMeta.Format)
+
 	baseName := fmt.Sprintf("%s/%s:%x", m.challengeRegistry, challengeToFreezeName(cMeta.Id), cMeta.SourceChecksum)
 	pullOpts := client.ImagePullOptions{RegistryAuth: m.authString}
 	var buildCache []string
@@ -389,6 +576,10 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 			CacheFrom: buildCache,
 			Tags:      []string{imageName},
 			Target:    host.Target,
+			Labels: map[string]string{
+				"cmgr.managed":   "true",
+				"cmgr.challenge": string(cMeta.Id),
+			},
 		}
 
 		// Call build
@@ -431,6 +622,9 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	// image; it is never started. Override the command so creation succeeds even
 	// for images with no CMD/ENTRYPOINT (e.g. artifact-only custom Dockerfiles),
 	// which Docker otherwise rejects with "no command specified".
+	// NOTE: a future `rollback` would re-run everything from here down against
+	// the PrevChecksum image (no docker build) to restore that generation's
+	// artifacts, lookups, and DB state.
 	cConfig := container.Config{Image: buildImage, Cmd: []string{"true"}}
 	hConfig := container.HostConfig{}
 	nConfig := network.NetworkingConfig{}
@@ -584,11 +778,29 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	if err != nil {
 		os.Remove(bMeta.getArtifactsFilename())
 
-		iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
-		for _, image := range bMeta.Images {
-			imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
-			_, _ = m.cli.ImageRemove(m.ctx, imageName, iro)
+		// Free the build image now rather than waiting for the deferred
+		// container cleanup: while the extraction container exists it references
+		// the image, so the non-forced ImageRemove below could not untag it.
+		// (The deferred removal then no-ops on the already-gone container.)
+		_, _ = m.cli.ContainerRemove(m.ctx, cid, crOpts)
+
+		// Untag the failed generation's images unless they must survive: another
+		// build row may share this exact (challenge, seed, format, checksum)
+		// tuple (e.g. the same challenge and seed in two schemas), or THIS row —
+		// on the rebuild path, not yet finalized — may retain this checksum as
+		// its rollback target (PrevChecksum), as after an A->B->A source revert.
+		// Both cases keep the images; only a genuinely unreferenced failed
+		// generation is removed. imageMu keeps the check-and-remove atomic
+		// against concurrent removers (destroyImages/pruneReplacedImages).
+		m.imageMu.Lock()
+		if bMeta.PrevChecksum != bMeta.Checksum && !m.contentReferenced(bMeta, bMeta.Id) {
+			iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
+			for _, image := range bMeta.Images {
+				imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
+				_, _ = m.cli.ImageRemove(m.ctx, imageName, iro)
+			}
 		}
+		m.imageMu.Unlock()
 	}
 
 	m.log.debugf("%v", bMeta)
@@ -889,6 +1101,49 @@ func (m *Manager) stopContainers(instance *InstanceMetadata) error {
 	return err
 }
 
+// replacedImages records the docker tags of a build generation superseded by
+// a rebuild, along with the identity tuple those tags encode.
+type replacedImages struct {
+	tags []string
+	meta BuildMetadata
+}
+
+// pruneReplacedImages untags image generations that fell out of retention
+// after an update rebuild (the 'update --prune-old' flow): the generation
+// displaced from PrevChecksum, never the newly retained rollback target. Each
+// entry is skipped while any live build row still resolves to its tuple;
+// removal failures are logged but never fatal — a leaked tag is recoverable,
+// a failed update is not.
+func (m *Manager) pruneReplacedImages(replaced []replacedImages) {
+	// Serialize the reference-check-then-remove against concurrent removers
+	// (destroyImages, executeBuild cleanup): content-addressed tags are shared
+	// across build rows, so an unsynchronized check could untag images a build
+	// finalized between the check and the removal.
+	m.imageMu.Lock()
+	defer m.imageMu.Unlock()
+
+	iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
+	for _, r := range replaced {
+		if m.contentReferenced(&r.meta, 0) {
+			m.log.debugf("keeping replaced images for %s: content still referenced by another build", r.meta.Challenge)
+			continue
+		}
+		for _, tag := range r.tags {
+			if _, err := m.cli.ImageRemove(m.ctx, tag, iro); err != nil {
+				if errdefs.IsNotFound(err) {
+					// Already removed — e.g. a build in another schema shared
+					// the tuple and its entry was pruned first.
+					m.log.debugf("replaced image already gone: %s", tag)
+				} else {
+					m.log.warnf("could not prune replaced image %s: %s", tag, err)
+				}
+			} else {
+				m.log.infof("pruned replaced image %s", tag)
+			}
+		}
+	}
+}
+
 func (m *Manager) destroyImages(build BuildId) error {
 	m.log.debugf("destroying build %d", build)
 	bMeta, err := m.lookupBuildMetadata(build)
@@ -915,17 +1170,55 @@ func (m *Manager) destroyImages(build BuildId) error {
 		}
 	}
 
-	iro := client.ImageRemoveOptions{Force: true, PruneChildren: true}
-	for _, image := range bMeta.Images {
+	// The build's metadata row is already gone, so any remaining row holding
+	// this content as its current or rollback generation is another build that
+	// shares these exact tags (e.g. the same challenge and seed in two
+	// schemas); in that case the images must survive. The current and rollback
+	// generations are checked independently — either can outlive the other.
+	//
+	// Force is false and removal failures are non-fatal by design: a content
+	// tag can be referenced outside this cmgr database — another cmgr instance
+	// on the same daemon that built identical content, possibly with a running
+	// or stopped container this database cannot see. Refusing to delete an
+	// in-use image and leaking the tag is recoverable; force-removing it out
+	// from under another instance is not. This mirrors the opt-in rationale for
+	// 'update --prune-old' (see UpdateOptions.PruneOldImages). imageMu serializes
+	// the reference-check-then-remove against concurrent removers.
+	m.imageMu.Lock()
+	defer m.imageMu.Unlock()
 
-		imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
-		_, err := m.cli.ImageRemove(m.ctx, imageName, iro)
-		if err != nil {
-			if errdefs.IsNotFound(err) {
-				m.log.warnf("skipped removing image (not found): %s", imageName)
-			} else {
-				m.log.errorf("failed to remove image: %s", err)
-				return err
+	iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
+	if m.contentReferenced(bMeta, bMeta.Id) {
+		m.log.debugf("keeping images for destroyed build %d: content still referenced by another build", build)
+	} else {
+		for _, image := range bMeta.Images {
+			imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
+			if _, err := m.cli.ImageRemove(m.ctx, imageName, iro); err != nil {
+				if errdefs.IsNotFound(err) {
+					m.log.warnf("skipped removing image (not found): %s", imageName)
+				} else {
+					m.log.warnf("could not remove image %s (leaving it in place): %s", imageName, err)
+				}
+			}
+		}
+	}
+
+	// Retire the build's retained rollback generation the same way; its tags
+	// may already be gone (never rotated, or pruned via another row), so
+	// removal here is best-effort.
+	if bMeta.PrevChecksum != 0 && bMeta.PrevChecksum != bMeta.Checksum {
+		prevMeta := BuildMetadata{
+			Challenge: bMeta.Challenge,
+			Seed:      bMeta.Seed,
+			Format:    bMeta.Format,
+			Checksum:  bMeta.PrevChecksum,
+		}
+		if !m.contentReferenced(&prevMeta, bMeta.Id) {
+			for _, image := range bMeta.Images {
+				imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, prevMeta.dockerId(image))
+				if _, err := m.cli.ImageRemove(m.ctx, imageName, iro); err != nil && !errdefs.IsNotFound(err) {
+					m.log.warnf("could not remove rollback-generation image %s: %s", imageName, err)
+				}
 			}
 		}
 	}

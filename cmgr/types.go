@@ -45,16 +45,23 @@ type Manager struct {
 	challengeDockerfiles map[string][]byte
 	rand                 *rand.Rand
 	randMu               sync.Mutex
-	challengeInterface   string
-	challengeRegistry    string
-	authString           string
-	hostOSType           string // docker daemon OSType, cached once at initDocker (immutable for the daemon)
-	portLow              int
-	portHigh             int
-	lastPruneUnix        atomic.Int64 // atomic UnixNano timestamp used as CAS gate for prune interval
-	pruneInterval        time.Duration
-	pruneAge             time.Duration
-	launchSemaphore      chan struct{}
+	// imageMu serializes the "is this content still referenced? if not, untag"
+	// critical sections (executeBuild cleanup, pruneReplacedImages,
+	// destroyImages) so a concurrent remover cannot delete a tag between
+	// another's reference check and its ImageRemove. Content-addressed tags are
+	// shared across build rows, so these checks race under cmgrd's concurrent
+	// request handling.
+	imageMu            sync.Mutex
+	challengeInterface string
+	challengeRegistry  string
+	authString         string
+	hostOSType         string // docker daemon OSType, cached once at initDocker (immutable for the daemon)
+	portLow            int
+	portHigh           int
+	lastPruneUnix      atomic.Int64 // atomic UnixNano timestamp used as CAS gate for prune interval
+	pruneInterval      time.Duration
+	pruneAge           time.Duration
+	launchSemaphore    chan struct{}
 }
 
 type PortInfo struct {
@@ -111,7 +118,7 @@ type ChallengeMetadata struct {
 	Attributes       map[string]string   `json:"attributes,omitempty"`
 	ChallengeOptions ChallengeOptions    `json:"challenge_options,omitempty"`
 
-	SolveScript bool             `json:"solve_script,omitempty"`
+	SolveScript bool `json:"solve_script,omitempty"`
 
 	// DeliveryType classifies what a player receives and therefore what cmgr
 	// must stand up at runtime. It is derived (deriveDeliveryType), never stored
@@ -169,6 +176,7 @@ func deriveDeliveryType(challengeType string, publishedPorts int) DeliveryType {
 func (cm *ChallengeMetadata) NeedsInstance() bool {
 	return cm.DeliveryType == "" || cm.DeliveryType == DeliveryService
 }
+
 type ChallengeUpdates struct {
 	Added      []*ChallengeMetadata `json:"added"`
 	Refreshed  []*ChallengeMetadata `json:"refreshed"`
@@ -185,8 +193,20 @@ type BuildMetadata struct {
 	Flag       string            `json:"flag"`
 	LookupData map[string]string `json:"lookup_data,omitempty"`
 
-	Seed         int                 `json:"seed"`
-	Format       string              `json:"format"`
+	Seed   int    `json:"seed"`
+	Format string `json:"format"`
+	// Checksum identifies the content this build's images were produced from:
+	// a CRC-32 over the challenge's source checksum and the flag format (see
+	// contentChecksum). It is set when the images are built, so after a source
+	// change it intentionally differs from the value derived from the
+	// challenge's current metadata until the build is rebuilt.
+	Checksum uint32 `json:"checksum,omitempty"`
+	// PrevChecksum is the generation Checksum displaced on the last rebuild
+	// (0 = none): its images are retained as the rollback target. A future
+	// `rollback` operation would swap it with Checksum, re-extract /challenge
+	// from that image (see executeBuild's extraction step), and restart
+	// instances. Same-row rollback is format- and seed-stable by construction.
+	PrevChecksum uint32              `json:"prev_checksum,omitempty" db:"prevchecksum"`
 	Images       []Image             `json:"images"`
 	HasArtifacts bool                `json:"has_artifacts"`
 	LastSolved   int64               `json:"last_solved"`
