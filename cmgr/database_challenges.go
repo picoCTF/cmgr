@@ -340,6 +340,29 @@ func (m *Manager) addChallenges(addedChallenges []*ChallengeMetadata) []error {
 	return errs
 }
 
+// rotatedPrevChecksum returns the rollback generation to retain after a
+// rebuild. When the content changed (newChecksum != oldChecksum) the generation
+// just replaced (oldChecksum) becomes the new rollback target; otherwise the
+// existing target (currentPrev) is left untouched, so a no-op rebuild does not
+// disturb retention.
+func rotatedPrevChecksum(oldChecksum, newChecksum, currentPrev uint32) uint32 {
+	if newChecksum != oldChecksum {
+		return oldChecksum
+	}
+	return currentPrev
+}
+
+// displacedPruneCandidate reports whether a rebuild displaced an image
+// generation that '--prune-old' should untag: the content actually changed
+// (newChecksum != oldChecksum), there was a prior rollback generation to
+// displace (displaced != 0), and that displaced generation is not the same
+// content as the just-rebuilt one. The last clause guards an A->B->A
+// flip-flop, where the displaced generation equals the new current generation
+// and must therefore be kept, not pruned.
+func displacedPruneCandidate(oldChecksum, newChecksum, displaced uint32) bool {
+	return newChecksum != oldChecksum && displaced != 0 && displaced != newChecksum
+}
+
 func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebuild bool, pruneOldImages bool) []error {
 	errs := []error{}
 	for _, metadata := range updatedChallenges {
@@ -649,10 +672,14 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 					}
 
 					// Rotate the retention pair; a rebuild that reproduced the
-					// same content leaves the rollback target untouched.
-					if build.Checksum != oldChecksum {
-						build.PrevChecksum = oldChecksum
-					}
+					// same content checksum leaves the rollback target untouched.
+					// Caveat: a checksum-stable but content-changing rebuild (a
+					// challenge-type change, or a cmgr release with a different
+					// built-in Dockerfile — see contentChecksum) is not rotated,
+					// so its displaced image is left dangling rather than
+					// retained; that class falls outside the {current, previous}
+					// retention guarantee.
+					build.PrevChecksum = rotatedPrevChecksum(oldChecksum, build.Checksum, build.PrevChecksum)
 
 					// Update database
 					err = m.finalizeBuild(build)
@@ -707,8 +734,7 @@ func (m *Manager) updateChallenges(updatedChallenges []*ChallengeMetadata, rebui
 					// rollback target. Its tags are reconstructed over the
 					// current host set — a generation built with different
 					// hosts leaves strays for a future sweep to reclaim.
-					if pruneOldImages && build.Checksum != oldChecksum &&
-						displaced != 0 && displaced != build.Checksum {
+					if pruneOldImages && displacedPruneCandidate(oldChecksum, build.Checksum, displaced) {
 						displacedMeta := BuildMetadata{
 							Challenge: build.Challenge,
 							Seed:      build.Seed,

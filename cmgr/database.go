@@ -241,8 +241,12 @@ func (m *Manager) initDatabase() error {
 
 	// Migrate older DBs: add builds.checksum, the content identity embedded in
 	// each build's docker tags. Rows predating the column are backfilled and
-	// their local images retagged from the legacy id-based tag form so
-	// existing deployments keep launching without a rebuild.
+	// their local images retagged from the legacy id-based tag form so existing
+	// deployments keep launching without a rebuild. The column is added once,
+	// but the backfill is driven by data (rows still at the default checksum=0)
+	// and runs on every start until it completes: a crash or transient docker
+	// error mid-migration leaves the affected rows at 0 and they are retried
+	// next start, rather than being skipped forever by a column-existence guard.
 	var buildsChecksumCols int
 	err = db.QueryRow("SELECT COUNT(1) FROM pragma_table_info('builds') WHERE name='checksum';").Scan(&buildsChecksumCols)
 	if err != nil {
@@ -255,10 +259,10 @@ func (m *Manager) initDatabase() error {
 			m.log.errorf("could not migrate builds.checksum column: %s", err)
 			return err
 		}
-		if err = m.migrateBuildChecksums(db); err != nil {
-			m.log.errorf("could not backfill builds.checksum: %s", err)
-			return err
-		}
+	}
+	if err = m.migrateBuildChecksums(db); err != nil {
+		m.log.errorf("could not backfill builds.checksum: %s", err)
+		return err
 	}
 
 	// builds.prevchecksum records the generation retained for rollback (0 =

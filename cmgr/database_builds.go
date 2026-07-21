@@ -9,6 +9,7 @@ const openBuildQuery string = `
         flag,
         seed,
         format,
+        checksum,
         hasartifacts,
         lastsolved,
         challenge,
@@ -19,6 +20,7 @@ const openBuildQuery string = `
         :flag,
         :seed,
         :format,
+        :checksum,
         :hasartifacts,
         :lastsolved,
         :challenge,
@@ -29,6 +31,21 @@ const openBuildQuery string = `
     	instancecount = excluded.instancecount;`
 
 func (m *Manager) openBuild(build *BuildMetadata) error {
+	// Stamp the content checksum at creation so an in-flight build is already
+	// visible to the reference checks that guard image untagging (see
+	// contentReferenced): without it a new row sits at checksum=0 from creation
+	// until finalizeBuild, and a concurrent destroy/prune in that window would
+	// not count it as a reference and could remove images it resolves to. The
+	// value matches what executeBuild stamps before building. Best-effort: if
+	// the challenge's source checksum is unavailable the row keeps its incoming
+	// value (finalizeBuild still stamps the real one on success).
+	if build.Checksum == 0 {
+		var srcChecksum uint32
+		if err := m.db.Get(&srcChecksum, "SELECT sourcechecksum FROM challenges WHERE id = ?;", build.Challenge); err == nil {
+			build.Checksum = contentChecksum(srcChecksum, build.Format)
+		}
+	}
+
 	_, err := m.db.NamedExec(openBuildQuery, build)
 	m.log.debugf("Opening %v", build)
 
@@ -194,17 +211,21 @@ func (m *Manager) finalizeBuild(build *BuildMetadata) error {
 }
 
 // contentReferenced reports whether a build row other than excludeBuild
-// resolves to the same docker tags as bMeta — identical challenge, seed, and
-// format, with bMeta's checksum as either its current generation or its
-// retained rollback generation (prevchecksum). Builds matching that way share
-// images by construction, so callers must not untag images while this returns
-// true. On a query error it fails safe (true): leaking an image tag is
-// recoverable, deleting one still in use is not.
+// resolves to the same docker tags as bMeta. A tag is exactly
+// (challenge, seed, checksum, host) — see dockerId — so the key is challenge
+// and seed with bMeta's checksum as either the row's current generation or its
+// retained rollback generation (prevchecksum). Format is deliberately NOT in
+// the key: it affects a tag only through the checksum (see contentChecksum),
+// so two rows with different formats but an equal checksum genuinely share
+// images and must count as references — matching on format too would miss
+// them. Builds matching this way share images by construction, so callers must
+// not untag images while this returns true. On a query error it fails safe
+// (true): leaking an image tag is recoverable, deleting one still in use is not.
 func (m *Manager) contentReferenced(bMeta *BuildMetadata, excludeBuild BuildId) bool {
 	var count int
 	err := m.db.Get(&count,
-		"SELECT COUNT(*) FROM builds WHERE challenge=? AND seed=? AND format=? AND (checksum=? OR prevchecksum=?) AND id != ?;",
-		bMeta.Challenge, bMeta.Seed, bMeta.Format, bMeta.Checksum, bMeta.Checksum, excludeBuild)
+		"SELECT COUNT(*) FROM builds WHERE challenge=? AND seed=? AND (checksum=? OR prevchecksum=?) AND id != ?;",
+		bMeta.Challenge, bMeta.Seed, bMeta.Checksum, bMeta.Checksum, excludeBuild)
 	if err != nil {
 		m.log.errorf("failed to check for builds sharing image tags: %s", err)
 		return true
