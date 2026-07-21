@@ -94,6 +94,7 @@ const schemaQuery string = `
 		format TEXT NOT NULL,
 		seed INTEGER NOT NULL,
 		checksum INTEGER NOT NULL DEFAULT 0,
+		prevchecksum INTEGER NOT NULL DEFAULT 0,
 		hasartifacts INTEGER NOT NULL CHECK (hasartifacts = 0 OR hasartifacts = 1),
 		lastsolved INTEGER,
 		challenge TEXT NOT NULL,
@@ -256,6 +257,22 @@ func (m *Manager) initDatabase() error {
 		}
 		if err = m.migrateBuildChecksums(db); err != nil {
 			m.log.errorf("could not backfill builds.checksum: %s", err)
+			return err
+		}
+	}
+
+	// builds.prevchecksum records the generation retained for rollback (0 =
+	// none known); no backfill is possible for rows that predate it.
+	var prevChecksumCols int
+	err = db.QueryRow("SELECT COUNT(1) FROM pragma_table_info('builds') WHERE name='prevchecksum';").Scan(&prevChecksumCols)
+	if err != nil {
+		m.log.errorf("could not inspect builds schema: %s", err)
+		return err
+	}
+	if prevChecksumCols == 0 {
+		_, err = db.Exec("ALTER TABLE builds ADD COLUMN prevchecksum INTEGER NOT NULL DEFAULT 0;")
+		if err != nil {
+			m.log.errorf("could not migrate builds.prevchecksum column: %s", err)
 			return err
 		}
 	}

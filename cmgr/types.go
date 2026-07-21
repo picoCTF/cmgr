@@ -193,7 +193,13 @@ type BuildMetadata struct {
 	// contentChecksum). It is set when the images are built, so after a source
 	// change it intentionally differs from the value derived from the
 	// challenge's current metadata until the build is rebuilt.
-	Checksum     uint32              `json:"checksum"`
+	Checksum uint32 `json:"checksum"`
+	// PrevChecksum is the generation Checksum displaced on the last rebuild
+	// (0 = none): its images are retained as the rollback target. A future
+	// `rollback` operation would swap it with Checksum, re-extract /challenge
+	// from that image (see executeBuild's extraction step), and restart
+	// instances. Same-row rollback is format- and seed-stable by construction.
+	PrevChecksum uint32              `json:"prev_checksum" db:"prevchecksum"`
 	Images       []Image             `json:"images"`
 	HasArtifacts bool                `json:"has_artifacts"`
 	LastSolved   int64               `json:"last_solved"`

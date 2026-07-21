@@ -103,6 +103,15 @@ func TestContentReferenced(t *testing.T) {
 	if mgr.contentReferenced(shared, idA) {
 		t.Error("expected a different-checksum build not to count as a reference")
 	}
+
+	// A build retaining the tuple's checksum as its rollback generation
+	// (prevchecksum) must also keep the images alive.
+	if _, err := mgr.db.Exec("UPDATE builds SET prevchecksum = ? WHERE schema = 'event-b';", checksum); err != nil {
+		t.Fatalf("failed to set prevchecksum: %s", err)
+	}
+	if !mgr.contentReferenced(shared, idA) {
+		t.Error("expected a rollback-generation reference to keep content referenced")
+	}
 }
 
 // TestBuildsChecksumMigration exercises the legacy-database migration path: a
@@ -199,12 +208,16 @@ func TestBuildsChecksumMigration(t *testing.T) {
 		t.Errorf("migrated checksum = %#x, want %#x", got, want)
 	}
 
-	// The migrated row must round-trip through the normal lookup path.
+	// The migrated row must round-trip through the normal lookup path, with
+	// the rollback generation unset (unknowable for pre-migration rows).
 	bMeta, err := mgr.lookupBuildMetadata(1)
 	if err != nil {
 		t.Fatalf("lookupBuildMetadata failed: %s", err)
 	}
 	if bMeta.Checksum != contentChecksum(sourceChecksum, format) {
 		t.Errorf("lookup returned checksum %#x, want %#x", bMeta.Checksum, contentChecksum(sourceChecksum, format))
+	}
+	if bMeta.PrevChecksum != 0 {
+		t.Errorf("lookup returned prevchecksum %#x, want 0", bMeta.PrevChecksum)
 	}
 }

@@ -533,6 +533,9 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	// image; it is never started. Override the command so creation succeeds even
 	// for images with no CMD/ENTRYPOINT (e.g. artifact-only custom Dockerfiles),
 	// which Docker otherwise rejects with "no command specified".
+	// NOTE: a future `rollback` would re-run everything from here down against
+	// the PrevChecksum image (no docker build) to restore that generation's
+	// artifacts, lookups, and DB state.
 	cConfig := container.Config{Image: buildImage, Cmd: []string{"true"}}
 	hConfig := container.HostConfig{}
 	nConfig := network.NetworkingConfig{}
@@ -996,6 +999,42 @@ func (m *Manager) stopContainers(instance *InstanceMetadata) error {
 	return err
 }
 
+// replacedImages records the docker tags of a build generation superseded by
+// a rebuild, along with the identity tuple those tags encode.
+type replacedImages struct {
+	tags []string
+	meta BuildMetadata
+}
+
+// pruneReplacedImages untags image generations that fell out of retention
+// after an update rebuild (the 'update --prune-old' flow): the generation
+// displaced from PrevChecksum, never the newly retained rollback target. Each
+// entry is skipped while any live build row still resolves to its tuple;
+// removal failures are logged but never fatal — a leaked tag is recoverable,
+// a failed update is not.
+func (m *Manager) pruneReplacedImages(replaced []replacedImages) {
+	iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
+	for _, r := range replaced {
+		if m.contentReferenced(&r.meta, 0) {
+			m.log.debugf("keeping replaced images for %s: content still referenced by another build", r.meta.Challenge)
+			continue
+		}
+		for _, tag := range r.tags {
+			if _, err := m.cli.ImageRemove(m.ctx, tag, iro); err != nil {
+				if errdefs.IsNotFound(err) {
+					// Already removed — e.g. a build in another schema shared
+					// the tuple and its entry was pruned first.
+					m.log.debugf("replaced image already gone: %s", tag)
+				} else {
+					m.log.warnf("could not prune replaced image %s: %s", tag, err)
+				}
+			} else {
+				m.log.infof("pruned replaced image %s", tag)
+			}
+		}
+	}
+}
+
 func (m *Manager) destroyImages(build BuildId) error {
 	m.log.debugf("destroying build %d", build)
 	bMeta, err := m.lookupBuildMetadata(build)
@@ -1022,26 +1061,46 @@ func (m *Manager) destroyImages(build BuildId) error {
 		}
 	}
 
-	// The build's metadata row is already gone, so any remaining row with the
-	// same (challenge, seed, format, checksum) tuple is another build that
+	// The build's metadata row is already gone, so any remaining row holding
+	// this content as its current or rollback generation is another build that
 	// shares these exact tags (e.g. the same challenge and seed in two
-	// schemas); in that case the images must survive.
+	// schemas); in that case the images must survive. The current and rollback
+	// generations are checked independently — either can outlive the other.
+	iro := client.ImageRemoveOptions{Force: true, PruneChildren: true}
 	if m.contentReferenced(bMeta, bMeta.Id) {
 		m.log.debugf("keeping images for destroyed build %d: content still referenced by another build", build)
-		return nil
+	} else {
+		for _, image := range bMeta.Images {
+
+			imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
+			_, err := m.cli.ImageRemove(m.ctx, imageName, iro)
+			if err != nil {
+				if errdefs.IsNotFound(err) {
+					m.log.warnf("skipped removing image (not found): %s", imageName)
+				} else {
+					m.log.errorf("failed to remove image: %s", err)
+					return err
+				}
+			}
+		}
 	}
 
-	iro := client.ImageRemoveOptions{Force: true, PruneChildren: true}
-	for _, image := range bMeta.Images {
-
-		imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
-		_, err := m.cli.ImageRemove(m.ctx, imageName, iro)
-		if err != nil {
-			if errdefs.IsNotFound(err) {
-				m.log.warnf("skipped removing image (not found): %s", imageName)
-			} else {
-				m.log.errorf("failed to remove image: %s", err)
-				return err
+	// Retire the build's retained rollback generation the same way; its tags
+	// may already be gone (never rotated, or pruned via another row), so
+	// removal here is best-effort.
+	if bMeta.PrevChecksum != 0 && bMeta.PrevChecksum != bMeta.Checksum {
+		prevMeta := BuildMetadata{
+			Challenge: bMeta.Challenge,
+			Seed:      bMeta.Seed,
+			Format:    bMeta.Format,
+			Checksum:  bMeta.PrevChecksum,
+		}
+		if !m.contentReferenced(&prevMeta, bMeta.Id) {
+			for _, image := range bMeta.Images {
+				imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, prevMeta.dockerId(image))
+				if _, err := m.cli.ImageRemove(m.ctx, imageName, iro); err != nil && !errdefs.IsNotFound(err) {
+					m.log.warnf("could not remove rollback-generation image %s: %s", imageName, err)
+				}
 			}
 		}
 	}

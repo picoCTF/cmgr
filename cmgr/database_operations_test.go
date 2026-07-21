@@ -169,7 +169,7 @@ func TestDatabaseUpdateChallenge(t *testing.T) {
 	challenge.Tags = []string{"updated", "modified"}
 	challenge.Attributes = map[string]string{"version": "2", "status": "active"}
 
-	errs = mgr.updateChallenges([]*ChallengeMetadata{challenge}, false)
+	errs = mgr.updateChallenges([]*ChallengeMetadata{challenge}, false, false)
 	if len(errs) > 0 {
 		t.Fatalf("updateChallenges failed: %v", errs)
 	}
