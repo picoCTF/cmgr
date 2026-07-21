@@ -2,6 +2,17 @@ package cmgr
 
 import "testing"
 
+// TestContentChecksumNeverZero pins the reservation of 0 as the "unset"
+// sentinel. sourceChecksum 0x05f16712 with format "flag{%s}" is a concrete
+// input whose raw CRC-32 is exactly 0x00000000, so without the reservation a
+// real generation would be indistinguishable from "none" (default 0, the
+// migration's checksum=0 marker, and prevchecksum=0 meaning no rollback gen).
+func TestContentChecksumNeverZero(t *testing.T) {
+	if got := contentChecksum(0x05f16712, "flag{%s}"); got == 0 {
+		t.Fatal("contentChecksum returned 0 for a known CRC-32-zero input; 0 must be reserved as the unset sentinel")
+	}
+}
+
 // TestRotatedPrevChecksum pins the retention rotation: the just-replaced
 // generation becomes the rollback target when content changes, and an
 // unchanged rebuild leaves the existing target alone.

@@ -307,7 +307,18 @@ func contentChecksum(sourceChecksum uint32, format string) uint32 {
 	binary.BigEndian.PutUint32(src[:], sourceChecksum)
 	h.Write(src[:])
 	h.Write([]byte(format))
-	return h.Sum32()
+	sum := h.Sum32()
+	// 0 is reserved as the "unset / not-yet-migrated" sentinel: builds.checksum
+	// and prevchecksum default to 0, the migration backfill keys on checksum=0,
+	// and prevchecksum=0 means "no rollback generation". CRC-32 can legitimately
+	// be 0 (e.g. sourceChecksum 0x05f16712 with format "flag{%s}"), which would
+	// make a real generation indistinguishable from "none", so map that single
+	// value to 1. This adds only the same negligible collision the CRC already
+	// permits.
+	if sum == 0 {
+		sum = 1
+	}
+	return sum
 }
 
 // dockerId is the docker tag for one of the build's images. It is derived
