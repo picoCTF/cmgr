@@ -93,7 +93,7 @@ func updateChallengeInfo(mgr *cmgr.Manager, args []string) int {
 	updateUsage(parser, "[<path>]")
 	verbose := parser.Bool("verbose", false, "print more information")
 	dryRun := parser.Bool("dry-run", false, "run the validation logic without updating the database or builds")
-	pruneOld := parser.Bool("prune-old", false, "remove image generations older than each build's retained rollback generation (off by default in case another cmgr instance on this docker daemon references them)")
+	pruneOld := parser.Bool("prune-old", false, "untag the image generation each rebuild displaces from its rollback slot (only what this update displaces, not older strays; off by default in case another cmgr instance on this docker daemon references it)")
 	parser.Parse(args)
 
 	if parser.NArg() > 1 {

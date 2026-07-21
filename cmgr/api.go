@@ -127,14 +127,16 @@ func (m *Manager) DetectChanges(fp string) *ChallengeUpdates {
 
 // UpdateOptions adjusts the behavior of `UpdateWithOptions`.
 type UpdateOptions struct {
-	// PruneOldImages removes image generations that fall out of retention when
-	// a rebuild lands: each build keeps its new images plus the generation it
+	// PruneOldImages untags the image generation a rebuild displaces from its
+	// rollback slot: each build keeps its new images plus the generation it
 	// just replaced (the rollback target, see BuildMetadata.PrevChecksum), and
-	// anything older is untagged once the new images are finalized and any
-	// instances restarted. Off by default: a tag can be referenced outside
-	// this cmgr database (e.g. another cmgr instance on the same docker
-	// daemon that built identical content), and cmgr cannot see those
-	// references.
+	// the one pushed beyond that is untagged after all of the challenge's builds
+	// are processed. Only generations displaced by THIS update are removed —
+	// generations orphaned by earlier updates that ran without this flag are
+	// not tracked and are not reclaimed here. Off by default: a tag can be
+	// referenced outside this cmgr database (e.g. another cmgr instance on the
+	// same docker daemon that built identical content), and cmgr cannot see
+	// those references.
 	PruneOldImages bool
 }
 
@@ -155,8 +157,8 @@ func (m *Manager) Update(fp string) *ChallengeUpdates {
 	return m.UpdateWithOptions(fp, UpdateOptions{})
 }
 
-// Identical to `Update` but with explicit options; `Update` is equivalent to
-// calling this with the zero-value `UpdateOptions`.
+// UpdateWithOptions is identical to Update but takes explicit options; Update
+// is equivalent to calling this with the zero-value UpdateOptions.
 func (m *Manager) UpdateWithOptions(fp string, options UpdateOptions) *ChallengeUpdates {
 	cu := m.DetectChanges(fp)
 	errs := m.addChallenges(cu.Added)

@@ -138,11 +138,11 @@ Available commands:
 
   update [<path>]
       updates the metadata for all challenges underneath the provided path and
-      rebuilds/restarts and existing builds/insances of those challenges; path
-      defaults to the root challenge directory if omitted; '--prune-old'
-      additionally removes image generations older than each build's retained
-      rollback generation and '--dry-run' reports changes without applying
-      anything
+      rebuilds/restarts any existing builds/instances of those challenges; path
+      defaults to the root challenge directory if omitted; '--prune-old' untags
+      the image generation each rebuild displaces from its rollback slot (only
+      generations displaced by this update, not older strays) and '--dry-run'
+      reports changes without applying anything
 
   freeze <challenge>
       for challenge formats that support it, creates a base container image

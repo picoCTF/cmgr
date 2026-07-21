@@ -418,6 +418,20 @@ definitions:
         format: int32
       format:
         type: string
+      checksum:
+        type: integer
+        format: int64
+        description: >
+          Content identity of the build's images (an unsigned 32-bit CRC over
+          the challenge source checksum and flag format). Embedded in the
+          images' docker tags; omitted when not yet determined.
+      prev_checksum:
+        type: integer
+        format: int64
+        description: >
+          The image generation displaced on the last rebuild, retained as a
+          rollback target. Omitted when there is no retained rollback
+          generation.
       images:
         type: array
         items:
