@@ -38,13 +38,13 @@ func (m *Manager) openBuild(build *BuildMetadata) error {
 	}
 
 	m.log.debug("Running select...")
-	rows, err := m.db.NamedQuery("SELECT id, flag, hasartifacts, lastsolved FROM builds WHERE schema=:schema AND format=:format AND challenge=:challenge AND seed=:seed;", build)
+	rows, err := m.db.NamedQuery("SELECT id, flag, hasartifacts, lastsolved, checksum FROM builds WHERE schema=:schema AND format=:format AND challenge=:challenge AND seed=:seed;", build)
 	if err != nil {
 		m.log.errorf("failed to find build: %s", err)
 	} else if !rows.Next() {
 		m.log.error("found no rows when exactly one expected")
 	}
-	err = rows.Scan(&build.Id, &build.Flag, &build.HasArtifacts, &build.LastSolved)
+	err = rows.Scan(&build.Id, &build.Flag, &build.HasArtifacts, &build.LastSolved, &build.Checksum)
 	if err != nil {
 		m.log.errorf("failed to read build ID: %s", err)
 	}
@@ -62,6 +62,7 @@ const finalizeBuildQuery string = `
 	SET
 		flag = :flag,
 		hasartifacts = :hasartifacts,
+		checksum = :checksum,
 		lastsolved = 0
 	WHERE id = :id;`
 
@@ -189,6 +190,24 @@ func (m *Manager) finalizeBuild(build *BuildMetadata) error {
 	}
 
 	return err
+}
+
+// contentReferenced reports whether a build row other than excludeBuild
+// resolves to the same docker tags as bMeta — identical challenge, seed,
+// format, and content checksum. Builds matching on that tuple share images by
+// construction, so callers must not untag images while this returns true. On
+// a query error it fails safe (true): leaking an image tag is recoverable,
+// deleting one still in use is not.
+func (m *Manager) contentReferenced(bMeta *BuildMetadata, excludeBuild BuildId) bool {
+	var count int
+	err := m.db.Get(&count,
+		"SELECT COUNT(*) FROM builds WHERE challenge=? AND seed=? AND format=? AND checksum=? AND id != ?;",
+		bMeta.Challenge, bMeta.Seed, bMeta.Format, bMeta.Checksum, excludeBuild)
+	if err != nil {
+		m.log.errorf("failed to check for builds sharing image tags: %s", err)
+		return true
+	}
+	return count > 0
 }
 
 func (m *Manager) removeBuildMetadata(build BuildId) error {

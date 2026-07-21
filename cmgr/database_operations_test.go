@@ -1734,8 +1734,11 @@ func TestInitDatabaseRepairsStaleIsFinalizedDefault(t *testing.T) {
 	}
 	// Mirror the pre-rebuild schema: created_at present, is_finalized added with
 	// the legacy DEFAULT 1. Seed one already-launched instance (default 1).
+	// The builds stub carries the seed/format/challenge columns every real
+	// pre-checksum database has, so the builds.checksum migration's backfill
+	// query can run against it (its challenges join simply matches nothing).
 	legacy := `
-	CREATE TABLE builds (id INTEGER PRIMARY KEY, schema TEXT);
+	CREATE TABLE builds (id INTEGER PRIMARY KEY, schema TEXT, seed INTEGER, format TEXT, challenge TEXT);
 	CREATE TABLE instances (
 		id INTEGER PRIMARY KEY,
 		lastsolved INTEGER,

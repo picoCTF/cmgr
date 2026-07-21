@@ -93,6 +93,7 @@ const schemaQuery string = `
 		flag TEXT NOT NULL,
 		format TEXT NOT NULL,
 		seed INTEGER NOT NULL,
+		checksum INTEGER NOT NULL DEFAULT 0,
 		hasartifacts INTEGER NOT NULL CHECK (hasartifacts = 0 OR hasartifacts = 1),
 		lastsolved INTEGER,
 		challenge TEXT NOT NULL,
@@ -233,6 +234,28 @@ func (m *Manager) initDatabase() error {
 		_, err = db.Exec("ALTER TABLE containerOptions ADD COLUMN capimmutable INTEGER NOT NULL DEFAULT 0;")
 		if err != nil {
 			m.log.errorf("could not migrate containerOptions.capimmutable column: %s", err)
+			return err
+		}
+	}
+
+	// Migrate older DBs: add builds.checksum, the content identity embedded in
+	// each build's docker tags. Rows predating the column are backfilled and
+	// their local images retagged from the legacy id-based tag form so
+	// existing deployments keep launching without a rebuild.
+	var buildsChecksumCols int
+	err = db.QueryRow("SELECT COUNT(1) FROM pragma_table_info('builds') WHERE name='checksum';").Scan(&buildsChecksumCols)
+	if err != nil {
+		m.log.errorf("could not inspect builds schema: %s", err)
+		return err
+	}
+	if buildsChecksumCols == 0 {
+		_, err = db.Exec("ALTER TABLE builds ADD COLUMN checksum INTEGER NOT NULL DEFAULT 0;")
+		if err != nil {
+			m.log.errorf("could not migrate builds.checksum column: %s", err)
+			return err
+		}
+		if err = m.migrateBuildChecksums(db); err != nil {
+			m.log.errorf("could not backfill builds.checksum: %s", err)
 			return err
 		}
 	}

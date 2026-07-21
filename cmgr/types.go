@@ -111,7 +111,7 @@ type ChallengeMetadata struct {
 	Attributes       map[string]string   `json:"attributes,omitempty"`
 	ChallengeOptions ChallengeOptions    `json:"challenge_options,omitempty"`
 
-	SolveScript bool             `json:"solve_script,omitempty"`
+	SolveScript bool `json:"solve_script,omitempty"`
 
 	// DeliveryType classifies what a player receives and therefore what cmgr
 	// must stand up at runtime. It is derived (deriveDeliveryType), never stored
@@ -169,6 +169,7 @@ func deriveDeliveryType(challengeType string, publishedPorts int) DeliveryType {
 func (cm *ChallengeMetadata) NeedsInstance() bool {
 	return cm.DeliveryType == "" || cm.DeliveryType == DeliveryService
 }
+
 type ChallengeUpdates struct {
 	Added      []*ChallengeMetadata `json:"added"`
 	Refreshed  []*ChallengeMetadata `json:"refreshed"`
@@ -185,8 +186,14 @@ type BuildMetadata struct {
 	Flag       string            `json:"flag"`
 	LookupData map[string]string `json:"lookup_data,omitempty"`
 
-	Seed         int                 `json:"seed"`
-	Format       string              `json:"format"`
+	Seed   int    `json:"seed"`
+	Format string `json:"format"`
+	// Checksum identifies the content this build's images were produced from:
+	// a CRC-32 over the challenge's source checksum and the flag format (see
+	// contentChecksum). It is set when the images are built, so after a source
+	// change it intentionally differs from the value derived from the
+	// challenge's current metadata until the build is rebuilt.
+	Checksum     uint32              `json:"checksum"`
 	Images       []Image             `json:"images"`
 	HasArtifacts bool                `json:"has_artifacts"`
 	LastSolved   int64               `json:"last_solved"`

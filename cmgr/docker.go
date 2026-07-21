@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/ioutil"
 	"net/netip"
@@ -23,6 +25,7 @@ import (
 	"github.com/containerd/errdefs"
 	dockeropts "github.com/docker/cli/opts"
 	"github.com/docker/go-units"
+	"github.com/jmoiron/sqlx"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/api/types/strslice"
@@ -260,8 +263,85 @@ func dockerStreamError(messages []byte) error {
 	return errors.New(string(errMsg))
 }
 
+// contentChecksum derives the content identity of a build's images: the
+// challenge source checksum combined with the flag format, which both bake
+// into the images via build args. The seed also affects image content but is
+// carried explicitly in the docker tag, so it is not folded in here.
+func contentChecksum(sourceChecksum uint32, format string) uint32 {
+	h := crc32.NewIEEE()
+	var src [4]byte
+	binary.BigEndian.PutUint32(src[:], sourceChecksum)
+	h.Write(src[:])
+	h.Write([]byte(format))
+	return h.Sum32()
+}
+
+// dockerId is the docker tag for one of the build's images. It is derived
+// from portable build identity — seed plus content checksum — rather than the
+// local autoincrement build id, so the same challenge content yields the same
+// tag no matter which cmgr database built it, and a source change yields a
+// new tag instead of mutating the old one. The "s" prefix keeps the tag valid
+// when the seed is negative.
 func (bMeta *BuildMetadata) dockerId(image Image) string {
-	return fmt.Sprintf("%d-%s", bMeta.Id, image.Host)
+	return fmt.Sprintf("s%d-%x-%s", bMeta.Seed, bMeta.Checksum, image.Host)
+}
+
+// migrateBuildChecksums backfills builds.checksum for rows created before the
+// column existed and retags their local docker images from the legacy
+// {buildid}-{host} tag form to the content-addressed form (see dockerId).
+// The backfill derives each build's checksum from its challenge's current
+// source checksum, which is what the images were built from as of the last
+// update — the same assumption the pre-checksum code made when it reused a
+// tag across rebuilds. Called from initDatabase before m.db is assigned, so
+// the handle is passed in explicitly; m.cli is nil when the database is
+// initialized without docker (tests), in which case retagging is skipped.
+func (m *Manager) migrateBuildChecksums(db *sqlx.DB) error {
+	rows := []struct {
+		Id             BuildId
+		Seed           int
+		Format         string
+		Challenge      string
+		SourceChecksum uint32 `db:"sourcechecksum"`
+	}{}
+	err := db.Select(&rows, `SELECT b.id, b.seed, b.format, b.challenge, c.sourcechecksum
+		FROM builds AS b JOIN challenges AS c ON b.challenge = c.id;`)
+	if err != nil {
+		return err
+	}
+
+	for _, row := range rows {
+		checksum := contentChecksum(row.SourceChecksum, row.Format)
+		if _, err := db.Exec("UPDATE builds SET checksum = ? WHERE id = ?;", checksum, row.Id); err != nil {
+			return err
+		}
+
+		if m.cli == nil {
+			continue
+		}
+
+		hosts := []string{}
+		if err := db.Select(&hosts, "SELECT host FROM images WHERE build = ?;", row.Id); err != nil {
+			return err
+		}
+		newMeta := BuildMetadata{Seed: row.Seed, Checksum: checksum}
+		for _, host := range hosts {
+			oldRef := fmt.Sprintf("%s:%d-%s", row.Challenge, row.Id, host)
+			newRef := fmt.Sprintf("%s:%s", row.Challenge, newMeta.dockerId(Image{Host: host}))
+			if _, err := m.cli.ImageTag(m.ctx, client.ImageTagOptions{Source: oldRef, Target: newRef}); err != nil {
+				// The image may simply not exist locally (already removed
+				// out-of-band, or a fresh daemon); the next rebuild recreates
+				// it under the new name, so this is not fatal.
+				m.log.warnf("could not retag legacy image %s as %s: %s", oldRef, newRef, err)
+				continue
+			}
+			// Drop the legacy ref; the image survives under the new one.
+			if _, err := m.cli.ImageRemove(m.ctx, oldRef, client.ImageRemoveOptions{Force: false, PruneChildren: false}); err != nil {
+				m.log.warnf("could not remove legacy image tag %s: %s", oldRef, err)
+			}
+			m.log.infof("retagged image %s as %s", oldRef, newRef)
+		}
+	}
+	return nil
 }
 
 func challengeToFreezeName(challenge ChallengeId) string {
@@ -300,6 +380,10 @@ func (m *Manager) freezeBaseImage(challenge ChallengeId, force bool) error {
 		Target:     "base",
 		NoCache:    force, // Require to use latest info on force
 		PullParent: force, // Update parent image as well on force
+		Labels: map[string]string{
+			"cmgr.managed":   "true",
+			"cmgr.challenge": string(challenge),
+		},
 	}
 
 	// Build the image
@@ -355,6 +439,10 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 
 	seedStr := fmt.Sprintf("%d", bMeta.Seed)
 
+	// Stamp the build with the content identity its images are about to be
+	// produced from; dockerId (and therefore every tag below) depends on it.
+	bMeta.Checksum = contentChecksum(cMeta.SourceChecksum, bMeta.Format)
+
 	baseName := fmt.Sprintf("%s/%s:%x", m.challengeRegistry, challengeToFreezeName(cMeta.Id), cMeta.SourceChecksum)
 	pullOpts := client.ImagePullOptions{RegistryAuth: m.authString}
 	var buildCache []string
@@ -399,6 +487,10 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 			CacheFrom: buildCache,
 			Tags:      []string{imageName},
 			Target:    host.Target,
+			Labels: map[string]string{
+				"cmgr.managed":   "true",
+				"cmgr.challenge": string(cMeta.Id),
+			},
 		}
 
 		// Call build
@@ -594,10 +686,15 @@ func (m *Manager) executeBuild(cMeta *ChallengeMetadata, bMeta *BuildMetadata, b
 	if err != nil {
 		os.Remove(bMeta.getArtifactsFilename())
 
-		iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
-		for _, image := range bMeta.Images {
-			imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
-			_, _ = m.cli.ImageRemove(m.ctx, imageName, iro)
+		// Content-addressed tags are shared by every build row with the same
+		// (challenge, seed, format, checksum) tuple — e.g. the same challenge
+		// and seed in two schemas — so only untag when no other row needs them.
+		if !m.contentReferenced(bMeta, bMeta.Id) {
+			iro := client.ImageRemoveOptions{Force: false, PruneChildren: true}
+			for _, image := range bMeta.Images {
+				imageName := fmt.Sprintf("%s:%s", bMeta.Challenge, bMeta.dockerId(image))
+				_, _ = m.cli.ImageRemove(m.ctx, imageName, iro)
+			}
 		}
 	}
 
@@ -923,6 +1020,15 @@ func (m *Manager) destroyImages(build BuildId) error {
 				return err
 			}
 		}
+	}
+
+	// The build's metadata row is already gone, so any remaining row with the
+	// same (challenge, seed, format, checksum) tuple is another build that
+	// shares these exact tags (e.g. the same challenge and seed in two
+	// schemas); in that case the images must survive.
+	if m.contentReferenced(bMeta, bMeta.Id) {
+		m.log.debugf("keeping images for destroyed build %d: content still referenced by another build", build)
+		return nil
 	}
 
 	iro := client.ImageRemoveOptions{Force: true, PruneChildren: true}
