@@ -165,9 +165,6 @@ func (m *Manager) generateBuilds(builds []*BuildMetadata) error {
 	for _, build := range builds {
 		buildsComplete = buildsComplete && (build.Flag != "")
 	}
-	if buildsComplete {
-		return nil
-	}
 
 	cMeta, err := m.lookupChallengeMetadata(builds[0].Challenge)
 	if err != nil {
@@ -175,12 +172,6 @@ func (m *Manager) generateBuilds(builds []*BuildMetadata) error {
 	}
 
 	updates := m.DetectChanges(filepath.Dir(cMeta.Path))
-	if len(updates.Errors) > 0 {
-		err = fmt.Errorf("errors detected in directory for '%s' run 'update'", cMeta.Id)
-		m.log.error(err)
-		return err
-	}
-
 	modified := true
 	for _, md := range updates.Unmodified {
 		if md.Id == cMeta.Id {
@@ -188,6 +179,25 @@ func (m *Manager) generateBuilds(builds []*BuildMetadata) error {
 			break
 		}
 	}
+
+	if buildsComplete {
+		// Nothing to build, but surface drift instead of returning silently:
+		// converging a schema does not rebuild existing builds — only
+		// 'update' does — so without this the images would quietly go stale.
+		if len(updates.Errors) > 0 {
+			m.log.warnf("errors detected in directory for '%s'; run 'update': %v", cMeta.Id, updates.Errors)
+		} else if modified {
+			m.log.warnf("source for '%s' has changed since last update; existing builds and images are stale until 'update' is run", cMeta.Id)
+		}
+		return nil
+	}
+
+	if len(updates.Errors) > 0 {
+		err = fmt.Errorf("errors detected in directory for '%s' run 'update'", cMeta.Id)
+		m.log.error(err)
+		return err
+	}
+
 	if modified {
 		err = fmt.Errorf("'%s' has changed since last update", cMeta.Id)
 		m.log.error(err)
