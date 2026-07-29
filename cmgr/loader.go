@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	dockeropts "github.com/docker/cli/opts"
 	"github.com/docker/go-units"
 )
 
@@ -337,7 +336,7 @@ func (m *Manager) validateMetadata(md *ChallengeMetadata) error {
 		}
 
 		if opts.Cpus != "" {
-			_, err := dockeropts.ParseCPUs(opts.Cpus)
+			_, err := parseNanoCPUs(opts.Cpus)
 			if err != nil {
 				lastErr = fmt.Errorf("%serror parsing cpus container option: %v", hostStr, err)
 				m.log.error(lastErr)
