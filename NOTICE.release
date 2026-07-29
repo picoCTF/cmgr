@@ -140,8 +140,8 @@ SOFTWARE.
 
 ------------------------------------------------------------------------------
 
-This work uses the 'gopkg.in/yaml.v2' module for Go
-(https://github.com/go-yaml/yaml) which contains the following NOTICE and is
+This work uses the 'go.yaml.in/yaml/v3' module for Go
+(https://github.com/yaml/go-yaml) which contains the following NOTICE and is
 licensed under the Apache 2.0 license (see LICENSE):
 
     Copyright 2011-2016 Canonical Ltd.
@@ -161,7 +161,7 @@ licensed under the Apache 2.0 license (see LICENSE):
 ------------------------------------------------------------------------------
 
 This work includes works derived from the libyaml project as part of the
-'gopkg.in/yaml.v2' module for Go:
+'go.yaml.in/yaml/v3' module for Go:
 
 Copyright (c) 2006 Kirill Simonov
 
