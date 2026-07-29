@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/containerd/errdefs"
-	dockeropts "github.com/docker/cli/opts"
 	"github.com/docker/go-units"
 	"github.com/jmoiron/sqlx"
 	"github.com/moby/moby/api/types/container"
@@ -937,7 +936,7 @@ func (m *Manager) startContainers(build *BuildMetadata, instance *InstanceMetada
 		if hasContainerOpts {
 			hConfig.Init = &cOpts.Init
 			if cOpts.Cpus != "" {
-				nanoCpus, err := dockeropts.ParseCPUs(cOpts.Cpus)
+				nanoCpus, err := parseNanoCPUs(cOpts.Cpus)
 				if err != nil {
 					return err
 				}
